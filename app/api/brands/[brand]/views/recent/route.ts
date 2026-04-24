@@ -9,7 +9,7 @@ export const runtime = "nodejs";
  * reserved name so the user can see + optionally pin it. POST-only so
  * `navigator.sendBeacon` can hit it during page unload.
  */
-export const RECENT_VIEW_NAME = "Recent";
+const RECENT_VIEW_NAME = "Recent";
 
 function resolveBrand(raw: string): string {
   return decodeURIComponent(raw).trim();
