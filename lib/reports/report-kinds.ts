@@ -69,7 +69,40 @@ export const KIND_TARGET_KEYWORD: KindSchema = {
   ],
 };
 
-export const ALL_KINDS: KindSchema[] = [KIND_SEARCH_TERM, KIND_TARGET_KEYWORD];
+/**
+ * Raw 3-way table — (date × campaign × target × customer search term)
+ * straight from Amazon's Search term report. Used ONLY for on-demand
+ * drill-down ("which targets matched this search term?") — never scanned
+ * by dashboard aggregates, which continue to use the pre-aggregated
+ * sp_search_term / sp_target_keyword tables. An index on
+ * (search_term) / (target_value) makes the filtered drill-down fast even
+ * on 10M+ row tables.
+ */
+export const KIND_RAW: KindSchema = {
+  slug: "sp_raw",
+  display_name: "SP 원본 (드릴다운용)",
+  description: "(date × campaign × target × customer search term) — 3중 raw",
+  columns: [
+    { column_name: "date", data_type: "timestamp", is_key: true, source_headers: ["Date"] },
+    { column_name: "campaign_name", data_type: "text", is_key: true, source_headers: ["Campaign name"] },
+    { column_name: "campaign_id", data_type: "integer", is_key: false, source_headers: ["Campaign ID"] },
+    { column_name: "target_value", data_type: "text", is_key: true, source_headers: ["Target value", "Target"] },
+    { column_name: "target_match_type", data_type: "text", is_key: true, source_headers: ["Target match type"] },
+    {
+      column_name: "search_term",
+      data_type: "text",
+      is_key: true,
+      source_headers: ["Customer search term", "Search term", "Matched target"],
+    },
+    { column_name: "budget_currency", data_type: "text", is_key: false, source_headers: ["Budget currency"] },
+    { column_name: "impressions", data_type: "integer", is_key: false, source_headers: ["Impressions", "Gross impressions"] },
+    { column_name: "clicks", data_type: "integer", is_key: false, source_headers: ["Clicks", "Gross clicks"] },
+    { column_name: "total_cost", data_type: "numeric", is_key: false, source_headers: ["Total cost", "Cost", "Spend"] },
+    { column_name: "sales", data_type: "numeric", is_key: false, source_headers: ["Sales", "7 day total sales"] },
+  ],
+};
+
+export const ALL_KINDS: KindSchema[] = [KIND_SEARCH_TERM, KIND_TARGET_KEYWORD, KIND_RAW];
 
 /**
  * Match a schema's expected columns to the headers present in the uploaded

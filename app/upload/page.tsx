@@ -607,7 +607,7 @@ export default function UploadPage() {
             이 파일이 어떤 레포트인지 고르세요. 컬럼 매핑은 자동으로 처리되어
             바로 브랜드 분배 단계로 넘어갑니다.
           </p>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {ALL_KINDS.map((schema) => (
               <button
                 key={schema.slug}

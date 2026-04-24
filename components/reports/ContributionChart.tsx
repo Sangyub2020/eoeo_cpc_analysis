@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BarChart,
   Bar,
@@ -11,7 +11,7 @@ import {
   ReferenceArea,
   ResponsiveContainer,
 } from "recharts";
-import { Loader2, Search, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { Loader2, Search, ArrowUp, ArrowDown, ArrowUpDown, Crosshair } from "lucide-react";
 import type { FilterState } from "@/lib/reports/filter";
 import type { ReportColumn } from "@/lib/reports/types";
 import { fmtShortDate } from "@/lib/reports/format";
@@ -48,6 +48,9 @@ interface Props {
   termsLoading: boolean;
   /** Which text column to stack by. Defaults to "search_term". */
   stackColumn?: string;
+  /** Optional drill-down handler — when present the TermPanel shows a 🎯
+   *  button per row that fires this with the term's value. */
+  onDrill?: (value: string) => void;
 }
 
 export default function ContributionChart({
@@ -61,6 +64,7 @@ export default function ContributionChart({
   setHidden,
   termsLoading,
   stackColumn = DEFAULT_STACK_COL,
+  onDrill,
 }: Props) {
   const STACK_COL = stackColumn;
   const stackCol = columns.find((c) => c.column_name === STACK_COL);
@@ -235,7 +239,7 @@ export default function ContributionChart({
     <div className="p-4 rounded-lg border border-purple-500/20 bg-slate-900/80 shadow-lg shadow-purple-500/10 text-gray-300 relative z-20">
       <div className="mb-3 flex flex-wrap items-center gap-3">
         <h3 className="text-sm font-medium text-gray-100">
-          일자별 {stackLabel} 기여도 <span className="text-gray-500">({metricLabel} 기준)</span>
+          일자별 {stackLabel} 매출 <span className="text-gray-500">({metricLabel} 기준)</span>
         </h3>
         <div className="inline-flex items-center gap-2 text-xs">
           <span className="text-gray-400">Top</span>
@@ -261,8 +265,8 @@ export default function ContributionChart({
         </div>
       </div>
 
-      <div className="flex gap-3 items-stretch">
-        <div className="flex-1 h-[360px] relative min-w-0">
+      <div className="flex gap-3 h-[520px]">
+        <div className="flex-1 h-full relative min-w-0">
           {error ? (
             <div className="h-full flex items-center justify-center text-sm text-rose-400">{error}</div>
           ) : rows.length === 0 && !busy ? (
@@ -388,6 +392,7 @@ export default function ContributionChart({
           hidden={hidden}
           toggleTerm={toggleTerm}
           toggleAll={toggleAll}
+          onDrill={onDrill}
         />
       </div>
     </div>
@@ -401,22 +406,91 @@ export default function ContributionChart({
 type SortKey = "cost" | "sales" | "roas" | null;
 type SortDir = "asc" | "desc";
 
+const PANEL_WIDTH_STORAGE_KEY = "termPanel.width";
+const PANEL_WIDTH_MIN = 320;
+const PANEL_WIDTH_MAX = 900;
+const PANEL_WIDTH_DEFAULT = 400;
+
 export function TermPanel({
   stackLabel,
   terms,
   hidden,
   toggleTerm,
   toggleAll,
+  onDrill,
 }: {
   stackLabel: string;
   terms: SharedTermStat[];
   hidden: Set<string>;
   toggleTerm: (v: string) => void;
   toggleAll: () => void;
+  /** When provided, shows a 🎯 button next to each term that fires the drill
+   *  callback. Caller decides what to open (modal, side panel, etc.). */
+  onDrill?: (value: string) => void;
 }) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>(null);
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  // Panel width — user drags the left edge to widen the term name column.
+  // Persisted so both the search-term and target-value panels share the setting.
+  const [panelWidth, setPanelWidth] = useState<number>(PANEL_WIDTH_DEFAULT);
+  useEffect(() => {
+    const raw = window.localStorage.getItem(PANEL_WIDTH_STORAGE_KEY);
+    const n = raw ? Number(raw) : NaN;
+    if (Number.isFinite(n) && n >= PANEL_WIDTH_MIN && n <= PANEL_WIDTH_MAX) {
+      setPanelWidth(n);
+    }
+  }, []);
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = panelWidth;
+    const onMove = (ev: MouseEvent) => {
+      // Dragging left (ev.clientX < startX) widens the panel.
+      const next = Math.max(
+        PANEL_WIDTH_MIN,
+        Math.min(PANEL_WIDTH_MAX, startW + (startX - ev.clientX)),
+      );
+      setPanelWidth(next);
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.localStorage.setItem(
+        PANEL_WIDTH_STORAGE_KEY,
+        String(Math.round(panelWidthRef.current)),
+      );
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
+  // Keep a ref in sync so the mouseup handler sees the final width.
+  const panelWidthRef = useRef(panelWidth);
+  useEffect(() => {
+    panelWidthRef.current = panelWidth;
+  }, [panelWidth]);
+
+  // Right-click copy feedback — shows "복사됨" pill for 1.5s next to the row.
+  const [copiedValue, setCopiedValue] = useState<string | null>(null);
+  async function copyValue(e: React.MouseEvent, value: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedValue(value);
+      window.setTimeout(
+        () => setCopiedValue((k) => (k === value ? null : k)),
+        1500,
+      );
+    } catch {
+      // Clipboard API unavailable — silently ignore.
+    }
+  }
 
   const totalSales = terms.reduce(
     (s, t) => s + (Number.isFinite(t.sales) ? t.sales : 0),
@@ -458,7 +532,15 @@ export function TermPanel({
   }
 
   return (
-    <div className="w-[400px] shrink-0 border border-purple-500/20 rounded-md bg-slate-900/40 flex flex-col">
+    <div
+      className="relative shrink-0 h-full border border-purple-500/20 rounded-md bg-slate-900/40 flex flex-col"
+      style={{ width: panelWidth }}
+    >
+      <div
+        onMouseDown={startResize}
+        className="absolute top-0 left-0 bottom-0 w-1.5 -translate-x-1/2 cursor-col-resize hover:bg-cyan-400/40 active:bg-cyan-400/60 z-10"
+        title="드래그해서 키워드 영역 너비 조절"
+      />
       <div className="px-3 py-2 border-b border-purple-500/20 flex items-center justify-between text-xs">
         <span className="text-gray-400">
           {stackLabel}{" "}
@@ -493,8 +575,13 @@ export function TermPanel({
         <SortHeaderBtn label="Sales" width="w-12" activeKey={sortKey} dir={sortDir} myKey="sales" onClick={() => handleSortClick("sales")} />
         <SortHeaderBtn label="ROAS" width="w-10" activeKey={sortKey} dir={sortDir} myKey="roas" onClick={() => handleSortClick("roas")} />
         <span className="w-10 text-right shrink-0">비중</span>
+        {onDrill && (
+          <span className="w-12 text-center shrink-0 text-gray-400 tracking-wider">
+            드릴
+          </span>
+        )}
       </div>
-      <div className="overflow-auto max-h-[400px] text-xs">
+      <div className="overflow-auto flex-1 min-h-0 text-xs">
         {filtered.map((t) => {
           const isHidden = hidden.has(t.value);
           const share =
@@ -519,9 +606,18 @@ export function TermPanel({
                 className="inline-block h-3 w-3 rounded shrink-0"
                 style={{ backgroundColor: colorByValue.get(t.value) ?? COLORS[0] }}
               />
-              <span className="flex-1 truncate text-gray-200" title={t.value}>
+              <span
+                className="flex-1 min-w-0 truncate text-gray-200 cursor-context-menu"
+                title={`${t.value}\n우클릭: 복사`}
+                onContextMenu={(e) => copyValue(e, t.value)}
+              >
                 {t.value}
               </span>
+              {copiedValue === t.value && (
+                <span className="text-[10px] text-emerald-300 shrink-0 animate-pulse">
+                  복사됨
+                </span>
+              )}
               <span className="w-12 tabular-nums text-gray-400 text-right shrink-0">
                 {fmtShort(t.cost)}
               </span>
@@ -542,6 +638,23 @@ export function TermPanel({
               <span className="w-10 tabular-nums text-cyan-300/80 text-right shrink-0">
                 {share != null ? fmtPct(share) : "—"}
               </span>
+              {onDrill && (
+                <span className="w-12 flex justify-center shrink-0">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      // Don't toggle the checkbox when clicking the drill button
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onDrill(t.value);
+                    }}
+                    className="p-1 rounded text-gray-500 hover:text-cyan-300 hover:bg-white/5"
+                    title={`이 ${stackLabel} 에 매칭된 항목 드릴다운`}
+                  >
+                    <Crosshair size={12} />
+                  </button>
+                </span>
+              )}
             </label>
           );
         })}

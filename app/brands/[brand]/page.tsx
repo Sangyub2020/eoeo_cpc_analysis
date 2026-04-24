@@ -7,6 +7,7 @@ import { ArrowLeft, Loader2, FolderOpen, BarChart3, History, Tag } from "lucide-
 import ChartBuilder, { type ChartConfigSnapshot } from "@/components/reports/ChartBuilder";
 import ContributionChart from "@/components/reports/ContributionChart";
 import RoasChart from "@/components/reports/RoasChart";
+import DrillDownModal from "@/components/reports/DrillDownModal";
 import CampaignLogTab from "@/components/reports/CampaignLogTab";
 import NicknamesTab from "@/components/reports/NicknamesTab";
 import ViewsBar from "@/components/reports/ViewsBar";
@@ -38,6 +39,15 @@ export default function BrandDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<"dashboard" | "history" | "nicknames">("dashboard");
+
+  /** Drill-down state: when a user clicks 🎯 next to a term in the right
+   *  panel, open a modal that queries the raw (sp_raw) table for the
+   *  cross-axis breakdown. */
+  const [drillState, setDrillState] = useState<{
+    filterBy: "search_term" | "target_value";
+    groupBy: "search_term" | "target_value";
+    value: string;
+  } | null>(null);
 
   /** Brand-scoped campaign_name → nickname map. Loaded from the API, passed
    *  down to ChartBuilder so long Amazon names display as readable aliases. */
@@ -462,9 +472,15 @@ export default function BrandDetailPage() {
 
           {/* SEARCH TERM SECTION — Contribution + ROAS */}
           {searchType && (
-            <div className="space-y-3">
-              <div className="flex items-baseline gap-2">
-                <h2 className="text-lg font-semibold text-gray-200">Search term 분석</h2>
+            <section className="relative rounded-xl border-2 border-cyan-500/40 bg-cyan-500/[0.03] pt-6 px-4 pb-4 mt-3 space-y-3 shadow-lg shadow-cyan-500/5">
+              <span className="absolute -top-3.5 left-4 inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-cyan-500 text-slate-950 text-sm font-bold uppercase tracking-wide shadow-lg shadow-cyan-500/40">
+                Search Term <span className="normal-case">분석</span>
+              </span>
+              <div className="flex items-baseline flex-wrap gap-x-3 gap-y-1 border-b border-cyan-500/20 pb-2">
+                <SelectedCampaignBadge
+                  campaigns={searchFilter.dimensions?.campaign_name ?? []}
+                  nicknames={nicknames}
+                />
                 <span className="text-xs text-gray-500">
                   <Link
                     href={`/reports/${searchType.type.slug}`}
@@ -485,6 +501,13 @@ export default function BrandDetailPage() {
                 setHidden={setSharedHiddenTerms}
                 termsLoading={sharedTermsLoading}
                 stackColumn="search_term"
+                onDrill={(v) =>
+                  setDrillState({
+                    filterBy: "search_term",
+                    groupBy: "target_value",
+                    value: v,
+                  })
+                }
               />
               <RoasChart
                 slug={searchType.type.slug}
@@ -496,15 +519,28 @@ export default function BrandDetailPage() {
                 hidden={sharedHiddenTerms}
                 setHidden={setSharedHiddenTerms}
                 termsLoading={sharedTermsLoading}
+                onDrill={(v) =>
+                  setDrillState({
+                    filterBy: "search_term",
+                    groupBy: "target_value",
+                    value: v,
+                  })
+                }
               />
-            </div>
+            </section>
           )}
 
           {/* TARGET VALUE SECTION — Contribution only */}
           {targetType && (
-            <div className="space-y-3">
-              <div className="flex items-baseline gap-2">
-                <h2 className="text-lg font-semibold text-gray-200">Target value 분석</h2>
+            <section className="relative rounded-xl border-2 border-purple-500/40 bg-purple-500/[0.03] pt-6 px-4 pb-4 mt-3 space-y-3 shadow-lg shadow-purple-500/5">
+              <span className="absolute -top-3.5 left-4 inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-purple-500 text-slate-950 text-sm font-bold uppercase tracking-wide shadow-lg shadow-purple-500/40">
+                Target Keyword <span className="normal-case">분석</span>
+              </span>
+              <div className="flex items-baseline flex-wrap gap-x-3 gap-y-1 border-b border-purple-500/20 pb-2">
+                <SelectedCampaignBadge
+                  campaigns={targetFilter.dimensions?.campaign_name ?? []}
+                  nicknames={nicknames}
+                />
                 <span className="text-xs text-gray-500">
                   <Link
                     href={`/reports/${targetType.type.slug}`}
@@ -525,8 +561,34 @@ export default function BrandDetailPage() {
                 setHidden={setSharedHiddenTargetValues}
                 termsLoading={sharedTargetValuesLoading}
                 stackColumn="target_value"
+                onDrill={(v) =>
+                  setDrillState({
+                    filterBy: "target_value",
+                    groupBy: "search_term",
+                    value: v,
+                  })
+                }
               />
-            </div>
+              <RoasChart
+                slug={targetType.type.slug}
+                columns={targetType.columns}
+                filter={targetFilter}
+                topN={targetValuesTopN}
+                setTopN={setTargetValuesTopN}
+                sharedTerms={sharedTargetValues}
+                hidden={sharedHiddenTargetValues}
+                setHidden={setSharedHiddenTargetValues}
+                termsLoading={sharedTargetValuesLoading}
+                stackColumn="target_value"
+                onDrill={(v) =>
+                  setDrillState({
+                    filterBy: "target_value",
+                    groupBy: "search_term",
+                    value: v,
+                  })
+                }
+              />
+            </section>
           )}
 
           {/* Fallback: any other report_types under this brand that don't
@@ -577,6 +639,61 @@ export default function BrandDetailPage() {
           </TabsContent>
         )}
       </Tabs>
+
+      {drillState && (
+        <DrillDownModal
+          brand={brand}
+          filterBy={drillState.filterBy}
+          value={drillState.value}
+          groupBy={drillState.groupBy}
+          filter={primaryFilter}
+          onClose={() => setDrillState(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/** Inline badge shown next to each section title. Reads the currently-selected
+ *  campaigns from the filter and renders `이름 (닉네임) 외 N-1개` style. */
+function SelectedCampaignBadge({
+  campaigns,
+  nicknames,
+}: {
+  campaigns: string[];
+  nicknames: Record<string, string>;
+}) {
+  if (!campaigns.length) {
+    return (
+      <span className="text-xs text-gray-500 italic">
+        선택된 캠페인 없음 (전체)
+      </span>
+    );
+  }
+  const first = campaigns[0];
+  const firstNick = nicknames[first];
+  const extra = campaigns.length - 1;
+  return (
+    <span className="inline-flex items-baseline gap-1.5 text-xs max-w-[720px] truncate">
+      <span
+        className="text-gray-200 font-medium font-mono truncate"
+        title={first}
+      >
+        {first}
+      </span>
+      {firstNick && (
+        <span className="text-cyan-300" title={`닉네임: ${firstNick}`}>
+          ({firstNick})
+        </span>
+      )}
+      {extra > 0 && (
+        <span
+          className="text-cyan-300 font-medium"
+          title={campaigns.slice(1).join("\n")}
+        >
+          외 {extra}개
+        </span>
+      )}
+    </span>
   );
 }

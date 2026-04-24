@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Upload, BarChart3, Tags } from "lucide-react";
+import { Tags, MessageSquare } from "lucide-react";
 import UserMenu from "@/components/layout/UserMenu";
 import "./globals.css";
 
@@ -24,13 +24,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </Link>
               <nav className="flex items-center gap-3 text-sm">
                 <Link
-                  href="/reports"
-                  className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 text-gray-300 hover:bg-white/5 hover:text-cyan-300"
-                >
-                  <BarChart3 className="h-4 w-4" />
-                  레포트
-                </Link>
-                <Link
                   href="/brands/manage"
                   className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 text-gray-300 hover:bg-white/5 hover:text-cyan-300"
                 >
@@ -38,11 +31,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   브랜드
                 </Link>
                 <Link
-                  href="/upload"
+                  href="/feedback"
                   className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 text-gray-300 hover:bg-white/5 hover:text-cyan-300"
                 >
-                  <Upload className="h-4 w-4" />
-                  업로드
+                  <MessageSquare className="h-4 w-4" />
+                  건의 · 피드백
                 </Link>
                 <UserMenu />
               </nav>

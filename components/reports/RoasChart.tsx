@@ -27,7 +27,7 @@ const COLORS = [
   "#2dd4bf", "#c084fc", "#4ade80", "#fb923c", "#e11d48",
 ];
 
-const STACK_COL = "search_term";
+const DEFAULT_STACK_COL = "search_term";
 const COST_COL = "total_cost";
 const SALES_COL = "sales";
 
@@ -44,6 +44,10 @@ interface Props {
   hidden: Set<string>;
   setHidden: (h: Set<string>) => void;
   termsLoading: boolean;
+  /** Which text column to stack by. Defaults to "search_term". */
+  stackColumn?: string;
+  /** Optional drill-down handler — forwarded to TermPanel's per-row button. */
+  onDrill?: (value: string) => void;
 }
 
 export default function RoasChart({
@@ -56,7 +60,10 @@ export default function RoasChart({
   hidden,
   setHidden,
   termsLoading,
+  stackColumn = DEFAULT_STACK_COL,
+  onDrill,
 }: Props) {
+  const STACK_COL = stackColumn;
   const stackCol = columns.find((c) => c.column_name === STACK_COL);
   const costCol = columns.find((c) => c.column_name === COST_COL);
   const salesCol = columns.find((c) => c.column_name === SALES_COL);
@@ -274,8 +281,8 @@ export default function RoasChart({
         {busy && <Loader2 size={12} className="animate-spin text-cyan-400" />}
       </div>
 
-      <div className="flex gap-3 items-stretch">
-        <div className="flex-1 h-[400px] relative min-w-0">
+      <div className="flex gap-3 h-[520px]">
+        <div className="flex-1 h-full relative min-w-0">
           {error ? (
             <div className="h-full flex items-center justify-center text-sm text-rose-400">{error}</div>
           ) : rows.length === 0 && !busy ? (
@@ -456,6 +463,7 @@ export default function RoasChart({
           hidden={hidden}
           toggleTerm={toggleTerm}
           toggleAll={toggleAll}
+          onDrill={onDrill}
         />
       </div>
     </div>

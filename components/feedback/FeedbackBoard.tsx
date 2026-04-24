@@ -1,0 +1,620 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import {
+  Loader2,
+  Plus,
+  Trash2,
+  Image as ImageIcon,
+  X,
+  Pencil,
+  Save,
+  MessageSquare,
+  Check,
+  Send,
+} from "lucide-react";
+
+type Status = "open" | "done";
+
+interface FeedbackPost {
+  id: string;
+  nickname: string;
+  note: string;
+  screenshots: string[];
+  status: Status;
+  created_at: string;
+  updated_at: string;
+}
+
+interface FeedbackComment {
+  id: string;
+  post_id: string;
+  nickname: string;
+  note: string;
+  created_at: string;
+}
+
+/**
+ * Public feedback board — anyone with the app passcode can leave a post
+ * (nickname + note + optional screenshots). Shown on the /reports landing
+ * page so it's the first thing teammates see after logging in.
+ */
+export default function FeedbackBoard() {
+  const [posts, setPosts] = useState<FeedbackPost[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [showAdd, setShowAdd] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const abort = new AbortController();
+    setLoading(true);
+    setError(null);
+    fetch("/api/feedback", { signal: abort.signal })
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.error) throw new Error(j.error);
+        setPosts(j.posts ?? []);
+      })
+      .catch((e) => {
+        if ((e as Error).name === "AbortError") return;
+        setError(e instanceof Error ? e.message : "로드 실패");
+      })
+      .finally(() => setLoading(false));
+    return () => abort.abort();
+  }, [refreshKey]);
+
+  async function deletePost(id: string) {
+    if (!window.confirm("이 건의를 삭제할까요?")) return;
+    const res = await fetch(`/api/feedback/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      alert(`삭제 실패: ${j.error ?? res.status}`);
+      return;
+    }
+    setRefreshKey((k) => k + 1);
+  }
+
+  async function toggleStatus(p: FeedbackPost) {
+    // Only two states in the UI: 접수 ↔ 완료. Meant for the developer to
+    // mark done once the request has been implemented.
+    const next: Status = p.status === "done" ? "open" : "done";
+    const res = await fetch(`/api/feedback/${p.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: next }),
+    });
+    if (!res.ok) return;
+    setRefreshKey((k) => k + 1);
+  }
+
+  const openCount = posts.filter((p) => p.status === "open").length;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-100 inline-flex items-center gap-2">
+            <MessageSquare className="text-cyan-300" size={18} />
+            건의 · 피드백
+          </h2>
+          <p className="text-xs text-gray-500">
+            고치고 싶은 점, 추가했으면 하는 기능 등을 편하게 남겨주세요.
+            {openCount > 0 && (
+              <span className="ml-2 text-amber-300">
+                접수 {openCount}건 대기중
+              </span>
+            )}
+          </p>
+        </div>
+        {!showAdd && (
+          <button
+            onClick={() => setShowAdd(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md bg-gradient-to-r from-cyan-500 to-purple-500 text-white text-sm font-medium hover:from-cyan-600 hover:to-purple-600 shadow-lg shadow-cyan-500/30"
+          >
+            <Plus size={14} /> 새 건의 작성
+          </button>
+        )}
+      </div>
+
+      {error && (
+        <div className="p-3 rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-300 text-sm">
+          {error}
+        </div>
+      )}
+
+      {showAdd && (
+        <PostForm
+          onCancel={() => setShowAdd(false)}
+          onSaved={() => {
+            setShowAdd(false);
+            setRefreshKey((k) => k + 1);
+          }}
+        />
+      )}
+
+      {loading && posts.length === 0 ? (
+        <div className="flex items-center gap-2 p-6 text-sm text-gray-500">
+          <Loader2 size={14} className="animate-spin text-cyan-400" /> 불러오는 중...
+        </div>
+      ) : posts.length === 0 && !showAdd ? (
+        <div className="p-10 rounded-lg border border-dashed border-purple-500/30 bg-slate-800/40 text-center text-sm text-gray-500">
+          아직 접수된 건의가 없습니다.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {posts.map((p) =>
+            editingId === p.id ? (
+              <PostForm
+                key={p.id}
+                initial={p}
+                onCancel={() => setEditingId(null)}
+                onSaved={() => {
+                  setEditingId(null);
+                  setRefreshKey((k) => k + 1);
+                }}
+              />
+            ) : (
+              <PostCard
+                key={p.id}
+                post={p}
+                onEdit={() => setEditingId(p.id)}
+                onDelete={() => deletePost(p.id)}
+                onToggleStatus={() => toggleStatus(p)}
+              />
+            ),
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function fmtWhen(iso: string): string {
+  const d = new Date(iso);
+  // Deterministic local format — avoids hydration mismatch between server/client.
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate(),
+  ).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(
+    d.getMinutes(),
+  ).padStart(2, "0")}`;
+}
+
+const STATUS_OPEN_STYLE = "bg-amber-500/15 text-amber-300 border-amber-500/30";
+const STATUS_DONE_STYLE = "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
+
+function PostCard({
+  post,
+  onEdit,
+  onDelete,
+  onToggleStatus,
+}: {
+  post: FeedbackPost;
+  onEdit: () => void;
+  onDelete: () => void;
+  onToggleStatus: () => void;
+}) {
+  const isDone = post.status === "done";
+
+  // Comments — loaded lazily when the section mounts.
+  const [comments, setComments] = useState<FeedbackComment[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentsRefresh, setCommentsRefresh] = useState(0);
+
+  useEffect(() => {
+    const abort = new AbortController();
+    setCommentsLoading(true);
+    fetch(`/api/feedback/${post.id}/comments`, { signal: abort.signal })
+      .then((r) => r.json())
+      .then((j) => setComments(j.comments ?? []))
+      .catch((e) => {
+        if ((e as Error).name === "AbortError") return;
+      })
+      .finally(() => setCommentsLoading(false));
+    return () => abort.abort();
+  }, [post.id, commentsRefresh]);
+
+  async function deleteComment(commentId: string) {
+    if (!window.confirm("이 댓글을 삭제할까요?")) return;
+    const res = await fetch(`/api/feedback/${post.id}/comments/${commentId}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      alert(`삭제 실패: ${j.error ?? res.status}`);
+      return;
+    }
+    setCommentsRefresh((k) => k + 1);
+  }
+
+  return (
+    <div
+      className={`p-4 rounded-lg border space-y-3 ${
+        isDone
+          ? "border-emerald-500/20 bg-emerald-500/5"
+          : "border-purple-500/20 bg-slate-800/40"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-semibold text-gray-100">{post.nickname}</span>
+          <span className="text-[11px] text-gray-500">{fmtWhen(post.created_at)}</span>
+          <button
+            onClick={onToggleStatus}
+            title={isDone ? "다시 접수로 되돌리기" : "완료로 표시 (개발자용)"}
+            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full border text-[10px] font-medium uppercase tracking-wide transition-colors ${
+              isDone ? STATUS_DONE_STYLE : STATUS_OPEN_STYLE
+            }`}
+          >
+            {isDone && <Check size={10} />}
+            {isDone ? "완료" : "접수"}
+          </button>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onEdit}
+            className="p-1.5 rounded-md text-gray-400 hover:text-cyan-300 hover:bg-white/5"
+            title="수정"
+          >
+            <Pencil size={14} />
+          </button>
+          <button
+            onClick={onDelete}
+            className="p-1.5 rounded-md text-gray-400 hover:text-rose-300 hover:bg-rose-500/10"
+            title="삭제"
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
+      </div>
+      <p
+        className={`text-sm whitespace-pre-wrap ${
+          isDone ? "text-gray-400 line-through decoration-emerald-400/50" : "text-gray-200"
+        }`}
+      >
+        {post.note}
+      </p>
+      {post.screenshots && post.screenshots.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {post.screenshots.map((url) => (
+            // eslint-disable-next-line @next/next/no-img-element
+            <a key={url} href={url} target="_blank" rel="noopener noreferrer">
+              <img
+                src={url}
+                alt="screenshot"
+                className="h-28 w-auto rounded-md border border-purple-500/20 object-cover hover:border-cyan-500/50 transition-colors"
+              />
+            </a>
+          ))}
+        </div>
+      )}
+
+      {/* Comment thread */}
+      <div className="pt-2 border-t border-purple-500/10 space-y-2">
+        {commentsLoading && comments.length === 0 ? (
+          <div className="text-xs text-gray-500">
+            <Loader2 size={10} className="inline animate-spin mr-1 text-cyan-400" />
+            댓글 불러오는 중
+          </div>
+        ) : comments.length === 0 ? (
+          <div className="text-xs text-gray-500">아직 댓글이 없습니다.</div>
+        ) : (
+          <ul className="space-y-1.5">
+            {comments.map((c) => (
+              <li
+                key={c.id}
+                className="flex items-start gap-2 text-xs group"
+              >
+                <span className="text-cyan-300 font-medium shrink-0">{c.nickname}</span>
+                <span className="text-gray-500 shrink-0">{fmtWhen(c.created_at)}</span>
+                <span className="text-gray-200 whitespace-pre-wrap flex-1">{c.note}</span>
+                <button
+                  onClick={() => deleteComment(c.id)}
+                  className="opacity-0 group-hover:opacity-100 p-0.5 text-gray-500 hover:text-rose-300"
+                  title="댓글 삭제"
+                >
+                  <X size={11} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <CommentForm
+          postId={post.id}
+          onSaved={() => setCommentsRefresh((k) => k + 1)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function CommentForm({
+  postId,
+  onSaved,
+}: {
+  postId: string;
+  onSaved: () => void;
+}) {
+  const [nickname, setNickname] = useState<string>(
+    typeof window !== "undefined"
+      ? localStorage.getItem("feedback_nickname") ?? ""
+      : "",
+  );
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit() {
+    const nick = nickname.trim();
+    const text = note.trim();
+    if (!nick) {
+      setErr("닉네임을 입력하세요.");
+      return;
+    }
+    if (!text) {
+      setErr("댓글 내용을 입력하세요.");
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    const res = await fetch(`/api/feedback/${postId}/comments`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nickname: nick, note: text }),
+    });
+    setSaving(false);
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      setErr(j.error ?? `저장 실패 (${res.status})`);
+      return;
+    }
+    if (typeof window !== "undefined") {
+      localStorage.setItem("feedback_nickname", nick);
+    }
+    setNote("");
+    onSaved();
+  }
+
+  return (
+    <div className="flex items-start gap-2">
+      <input
+        value={nickname}
+        onChange={(e) => setNickname(e.target.value)}
+        placeholder="닉네임"
+        className="w-24 shrink-0 rounded-md border border-purple-500/20 bg-slate-900 text-gray-200 px-2 py-1 text-xs focus:border-cyan-500 focus:outline-none"
+      />
+      <input
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey && !saving) {
+            e.preventDefault();
+            void submit();
+          }
+        }}
+        placeholder="댓글 달기... (Enter 로 등록)"
+        className="flex-1 rounded-md border border-purple-500/20 bg-slate-900 text-gray-200 px-2 py-1 text-xs focus:border-cyan-500 focus:outline-none"
+      />
+      <button
+        onClick={submit}
+        disabled={saving}
+        className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-xs hover:bg-cyan-500/30 disabled:opacity-50"
+        title="등록"
+      >
+        {saving ? <Loader2 size={11} className="animate-spin" /> : <Send size={11} />}
+      </button>
+      {err && (
+        <span className="ml-2 text-[11px] text-rose-300 self-center">{err}</span>
+      )}
+    </div>
+  );
+}
+
+function PostForm({
+  initial,
+  onCancel,
+  onSaved,
+}: {
+  initial?: FeedbackPost;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const [nickname, setNickname] = useState<string>(
+    initial?.nickname ?? (typeof window !== "undefined" ? localStorage.getItem("feedback_nickname") ?? "" : ""),
+  );
+  const [note, setNote] = useState<string>(initial?.note ?? "");
+  const [screenshots, setScreenshots] = useState<string[]>(initial?.screenshots ?? []);
+  const [uploading, setUploading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function uploadFiles(files: File[]) {
+    if (files.length === 0) return;
+    setUploading(true);
+    setErr(null);
+    const uploaded: string[] = [];
+    try {
+      for (const file of files) {
+        const form = new FormData();
+        form.append("file", file);
+        const res = await fetch("/api/feedback/upload", { method: "POST", body: form });
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.error ?? `upload failed (${res.status})`);
+        uploaded.push(j.url);
+      }
+      setScreenshots((prev) => [...prev, ...uploaded]);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "업로드 실패");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function handleFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    void uploadFiles(Array.from(files));
+  }
+
+  function handlePaste(e: React.ClipboardEvent) {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imageFiles: File[] = [];
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith("image/")) {
+        const f = item.getAsFile();
+        if (f) imageFiles.push(f);
+      }
+    }
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      void uploadFiles(imageFiles);
+    }
+  }
+
+  async function save() {
+    const trimmedNick = nickname.trim();
+    const trimmedNote = note.trim();
+    if (!trimmedNick) {
+      setErr("닉네임을 입력하세요.");
+      return;
+    }
+    if (!trimmedNote) {
+      setErr("내용을 입력하세요.");
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    const body = { nickname: trimmedNick, note: trimmedNote, screenshots };
+    const url = initial ? `/api/feedback/${initial.id}` : "/api/feedback";
+    const method = initial ? "PATCH" : "POST";
+    const res = await fetch(url, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    setSaving(false);
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      setErr(j.error ?? `저장 실패 (${res.status})`);
+      return;
+    }
+    // Remember the nickname so the user doesn't retype it next time.
+    if (typeof window !== "undefined") {
+      localStorage.setItem("feedback_nickname", trimmedNick);
+    }
+    onSaved();
+  }
+
+  function removeScreenshot(url: string) {
+    setScreenshots((prev) => prev.filter((u) => u !== url));
+  }
+
+  return (
+    <div
+      onPaste={handlePaste}
+      className="p-4 rounded-lg border border-cyan-500/30 bg-slate-800/60 space-y-3"
+    >
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="inline-flex items-center gap-2 text-xs text-gray-400">
+          닉네임
+          <input
+            value={nickname}
+            onChange={(e) => setNickname(e.target.value)}
+            placeholder="예: 상엽"
+            className="rounded-md border border-purple-500/30 bg-slate-900 text-gray-200 px-2 py-1 text-sm w-40 focus:border-cyan-500 focus:outline-none"
+          />
+        </label>
+      </div>
+
+      <textarea
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder="고치고 싶은 부분, 추가할 기능, 버그 등..."
+        rows={4}
+        className="w-full rounded-md border border-purple-500/30 bg-slate-900 text-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none"
+      />
+
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-purple-500/30 bg-slate-900 text-xs text-gray-300 cursor-pointer hover:border-cyan-500/50">
+            <ImageIcon size={14} className="text-cyan-400" />
+            스크린샷 추가
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                handleFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+          </label>
+          <span className="text-[11px] text-gray-500">
+            또는{" "}
+            <kbd className="px-1 py-0.5 rounded bg-slate-900 border border-purple-500/30 text-gray-300 font-mono text-[10px]">
+              Ctrl
+            </kbd>
+            <span className="mx-0.5 text-gray-500">+</span>
+            <kbd className="px-1 py-0.5 rounded bg-slate-900 border border-purple-500/30 text-gray-300 font-mono text-[10px]">
+              V
+            </kbd>{" "}
+            로 붙여넣기
+          </span>
+          {uploading && (
+            <span className="inline-flex items-center gap-1 text-xs text-gray-400">
+              <Loader2 size={12} className="animate-spin text-cyan-400" /> 업로드 중
+            </span>
+          )}
+        </div>
+
+        {screenshots.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {screenshots.map((url) => (
+              <div key={url} className="relative group">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={url}
+                  alt=""
+                  className="h-24 w-auto rounded-md border border-purple-500/20"
+                />
+                <button
+                  onClick={() => removeScreenshot(url)}
+                  className="absolute top-1 right-1 p-1 rounded-full bg-slate-900/80 text-gray-300 opacity-0 group-hover:opacity-100 hover:text-rose-300 transition-opacity"
+                  title="제거"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {err && (
+        <div className="p-2 rounded border border-rose-500/30 bg-rose-500/10 text-rose-300 text-xs">
+          {err}
+        </div>
+      )}
+
+      <div className="flex justify-end gap-2">
+        <button
+          onClick={onCancel}
+          disabled={saving || uploading}
+          className="px-3 py-1.5 rounded-md border border-purple-500/30 text-sm text-gray-300 hover:bg-white/5 disabled:opacity-50"
+        >
+          취소
+        </button>
+        <button
+          onClick={save}
+          disabled={saving || uploading}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-gradient-to-r from-cyan-500 to-purple-500 text-white text-sm font-medium hover:from-cyan-600 hover:to-purple-600 disabled:opacity-50"
+        >
+          {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+          {initial ? "저장" : "등록"}
+        </button>
+      </div>
+    </div>
+  );
+}
