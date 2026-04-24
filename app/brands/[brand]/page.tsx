@@ -552,38 +552,38 @@ export default function BrandDetailPage() {
               Sticky to the top of the viewport (below the global app header)
               so the date window stays visible while scrolling through long
               charts. `top-14` matches the app header height. */}
-          <div className="sticky top-14 z-20 -mx-2 px-2 bg-slate-900/80 backdrop-blur-xl py-2 rounded-b-lg shadow-md shadow-slate-950/40">
-            <div className="px-3 py-2 rounded-lg border border-purple-500/20 bg-slate-800/60 backdrop-blur-xl flex flex-wrap items-center gap-3 text-sm">
-              <span className="text-xs font-medium text-gray-300 shrink-0">공통 기간</span>
-              <label className="inline-flex items-center gap-1 text-xs text-gray-400 shrink-0">
+          <div className="sticky top-14 z-20 -mx-2 px-2 bg-slate-900/85 backdrop-blur-xl py-1 rounded-b-lg shadow-md shadow-slate-950/40">
+            <div className="px-2.5 py-1.5 rounded-md border border-purple-500/20 bg-slate-800/60 flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-[11px] font-medium text-gray-300 shrink-0">공통 기간</span>
+              <label className="inline-flex items-center gap-1 text-gray-400 shrink-0">
                 <input
                   type="date"
                   min={brandDateBounds?.min ?? undefined}
                   max={brandDateBounds?.max ?? undefined}
                   value={searchFilter.dateFrom ?? targetFilter.dateFrom ?? ""}
                   onChange={(e) => setSharedDate("from", e.target.value || null)}
-                  className="rounded border border-purple-500/30 bg-slate-900 px-2 py-1 text-xs text-gray-200 focus:border-cyan-500 focus:outline-none [color-scheme:dark]"
+                  className="rounded border border-purple-500/30 bg-slate-900 px-1.5 py-0.5 text-[11px] text-gray-200 focus:border-cyan-500 focus:outline-none [color-scheme:dark]"
                 />
-                <span>~</span>
+                <span className="text-gray-500">~</span>
                 <input
                   type="date"
                   min={brandDateBounds?.min ?? undefined}
                   max={brandDateBounds?.max ?? undefined}
                   value={searchFilter.dateTo ?? targetFilter.dateTo ?? ""}
                   onChange={(e) => setSharedDate("to", e.target.value || null)}
-                  className="rounded border border-purple-500/30 bg-slate-900 px-2 py-1 text-xs text-gray-200 focus:border-cyan-500 focus:outline-none [color-scheme:dark]"
+                  className="rounded border border-purple-500/30 bg-slate-900 px-1.5 py-0.5 text-[11px] text-gray-200 focus:border-cyan-500 focus:outline-none [color-scheme:dark]"
                 />
               </label>
               {brandDateBounds && (
-                <div className="flex-1 min-w-[240px] max-w-[720px]">
+                <div className="flex-1 min-w-[200px] max-w-[640px]">
                   <DateRangeSlider
                     minDate={brandDateBounds.min}
                     maxDate={brandDateBounds.max}
                     fromDate={searchFilter.dateFrom ?? targetFilter.dateFrom ?? null}
                     toDate={searchFilter.dateTo ?? targetFilter.dateTo ?? null}
                     onChange={(from, to) => {
-                      setSharedDate("from", from);
-                      setSharedDate("to", to);
+                      setSearchFilter((f) => ({ ...f, dateFrom: from, dateTo: to }));
+                      setTargetFilter((f) => ({ ...f, dateFrom: from, dateTo: to }));
                     }}
                   />
                 </div>
