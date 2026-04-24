@@ -80,13 +80,48 @@ export function inferDataType(values: unknown[]): DataType {
 }
 
 /**
+ * Known Amazon export header variants that should collapse to the same
+ * internal column. Keys are lowercased source headers; values are canonical
+ * snake_case column names. Matched BEFORE the generic snake_case transform
+ * so a "Gross clicks" header uploaded into an existing report finds the
+ * existing `clicks` column instead of creating a parallel `gross_clicks`.
+ *
+ * Extend this list when you see a new header variant in the wild.
+ */
+const HEADER_ALIASES: Record<string, string> = {
+  // Click-count variants
+  clicks: "clicks",
+  "gross clicks": "clicks",
+  // Impression variants
+  impressions: "impressions",
+  "gross impressions": "impressions",
+  // Search-term variants (Amazon has used all of these for the same field)
+  "search term": "search_term",
+  "customer search term": "search_term",
+  "matched target": "search_term",
+  // Cost variants
+  "total cost": "total_cost",
+  spend: "total_cost",
+  cost: "total_cost",
+  // Sales variants
+  sales: "sales",
+  "7 day total sales": "sales",
+  "7 day total sales (₩)": "sales",
+};
+
+/**
  * Convert an arbitrary source header into a Postgres-safe snake_case identifier.
  * Result matches /^[a-z_][a-z0-9_]{0,62}$/ .
+ *
+ * Applies known Amazon alias map first so variants like "Gross clicks" reuse
+ * the canonical `clicks` column.
  */
 export function normalizeHeader(h: string, fallbackIndex = 0): string {
-  let s = h
-    .toLowerCase()
-    .trim()
+  const lowered = h.toLowerCase().trim();
+  const aliased = HEADER_ALIASES[lowered];
+  if (aliased) return aliased;
+
+  let s = lowered
     .replace(/[^a-z0-9_]+/g, "_")
     .replace(/^_+|_+$/g, "")
     .replace(/_+/g, "_");

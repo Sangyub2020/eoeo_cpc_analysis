@@ -16,6 +16,10 @@ export interface ReportType {
   /** Optional grouping tag so two complementary uploads (e.g. a brand's
    *  search-term export + target-keyword export) render as one dashboard. */
   brand: string | null;
+  /** Logical shape of the report (e.g. 'sp_search_term'). Null for legacy
+   *  pre-brand-routing types. Uploads created via the assignment flow share
+   *  a kind across all brands, so slug convention is `{kind}__{brand_slug}`. */
+  kind: string | null;
 }
 
 export interface ReportColumn {
@@ -40,12 +44,19 @@ export interface ParsedFile {
 
 /** One header's plan as resolved on the client, sent to /api/reports/commit */
 export interface HeaderPlan {
+  /** Actual header as it appears in the uploaded CSV — used to read cell
+   *  values from the parsed row dict on the client. */
   source_header: string;
   column_name: string;   // sanitized
   data_type: DataType;
   is_key: boolean;
   is_new: boolean;       // true if DB didn't have this column yet
   include: boolean;      // user can opt out (skip the column entirely)
+  /** Canonical label to persist in `report_columns.source_header` and show
+   *  in charts/UI. Lets us unify naming across Amazon export variants (e.g.
+   *  "Matched target" in target reports → display as "Search term"). If
+   *  omitted, falls back to `source_header`. */
+  display_header?: string;
 }
 
 export interface PreviewResponse {

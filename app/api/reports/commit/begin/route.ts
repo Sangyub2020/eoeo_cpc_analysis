@@ -21,6 +21,10 @@ interface BeginPayload {
   /** Optional brand/group tag. For new types written to report_types.brand;
    *  for existing types, if provided it overwrites the stored value. */
   brand?: string | null;
+  /** Logical shape slug (e.g. 'sp_search_term'). Persisted on new types and
+   *  overwritten on existing types when supplied — used by the brand-routing
+   *  flow to group brand-scoped types by a shared shape. */
+  kind?: string | null;
 }
 
 const SLUG_RE = /^[a-z][a-z0-9_]{0,62}$/;
@@ -35,6 +39,7 @@ export async function POST(req: Request) {
 
   const { slug, display_name, isNewType, headerPlan, fileName, expectedRowCount } = payload;
   const brand = payload.brand?.trim() ? payload.brand.trim() : null;
+  const kind = payload.kind?.trim() ? payload.kind.trim() : null;
 
   if (!slug || !SLUG_RE.test(slug)) {
     return NextResponse.json({ error: `invalid slug: must match ${SLUG_RE}` }, { status: 400 });
@@ -100,6 +105,7 @@ export async function POST(req: Request) {
         table_name: tableName,
         key_columns: keyColumns,
         brand,
+        kind,
       })
       .select()
       .single();
@@ -115,7 +121,9 @@ export async function POST(req: Request) {
       activePlan.map((h, idx) => ({
         report_type_id: reportTypeId,
         column_name: h.column_name,
-        source_header: h.source_header,
+        // Prefer the canonical display label if the client provided one,
+        // so target-keyword uploads show "Search term" not "Matched target".
+        source_header: h.display_header ?? h.source_header,
         data_type: h.data_type,
         is_key: h.is_key,
         position: idx,
@@ -138,9 +146,12 @@ export async function POST(req: Request) {
 
     // If the caller supplied a brand on an existing type, overwrite — makes
     // it easy to retroactively group a report that was created before the
-    // brand field existed.
-    if (brand !== null) {
-      await supabase.from("report_types").update({ brand }).eq("id", reportTypeId);
+    // brand field existed. Same pattern for kind.
+    const patch: Record<string, unknown> = {};
+    if (brand !== null) patch.brand = brand;
+    if (kind !== null) patch.kind = kind;
+    if (Object.keys(patch).length > 0) {
+      await supabase.from("report_types").update(patch).eq("id", reportTypeId);
     }
 
     const newCols = activePlan.filter((h) => h.is_new);
@@ -161,7 +172,7 @@ export async function POST(req: Request) {
           newCols.map((h, idx) => ({
             report_type_id: reportTypeId,
             column_name: h.column_name,
-            source_header: h.source_header,
+            source_header: h.display_header ?? h.source_header,
             data_type: h.data_type,
             is_key: false,
             position: 999 + idx,

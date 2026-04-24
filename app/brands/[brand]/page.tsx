@@ -7,7 +7,7 @@ import { ArrowLeft, Loader2, FolderOpen, BarChart3, History, Tag } from "lucide-
 import ChartBuilder, { type ChartConfigSnapshot } from "@/components/reports/ChartBuilder";
 import ContributionChart from "@/components/reports/ContributionChart";
 import RoasChart from "@/components/reports/RoasChart";
-import HistoryTab from "@/components/reports/HistoryTab";
+import CampaignLogTab from "@/components/reports/CampaignLogTab";
 import NicknamesTab from "@/components/reports/NicknamesTab";
 import ViewsBar from "@/components/reports/ViewsBar";
 import { emptyFilter, type FilterState } from "@/lib/reports/filter";
@@ -15,7 +15,6 @@ import type { ReportColumn, ReportType } from "@/lib/reports/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 
 type TypeInfo = { type: ReportType; columns: ReportColumn[] };
@@ -363,19 +362,19 @@ export default function BrandDetailPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <Button asChild variant="ghost" size="sm" className="-ml-2 h-auto px-2 py-1 text-muted-foreground">
+    <div className="space-y-3">
+      <Button asChild variant="ghost" size="sm" className="-ml-2 h-auto px-2 py-0.5 text-muted-foreground">
         <Link href="/reports">
           <ArrowLeft className="mr-1 h-3.5 w-3.5" /> 목록으로
         </Link>
       </Button>
 
-      <div className="flex flex-col gap-2">
-        <h1 className="text-3xl font-bold bg-gradient-to-r from-cyan-400 to-purple-400 bg-clip-text text-transparent inline-flex items-center gap-3">
-          <FolderOpen className="text-cyan-300" size={26} />
+      <div className="flex flex-col gap-0.5">
+        <h1 className="text-2xl font-bold bg-gradient-to-r from-cyan-400 to-purple-400 bg-clip-text text-transparent inline-flex items-center gap-2">
+          <FolderOpen className="text-cyan-300" size={22} />
           {brand}
         </h1>
-        <div className="text-sm text-gray-400">
+        <div className="text-xs text-gray-400">
           {types.length}개 레포트 포함:{" "}
           {types.map((t, i) => (
             <span key={t.type.slug}>
@@ -391,46 +390,13 @@ export default function BrandDetailPage() {
         </div>
       </div>
 
-      <Separator />
-
-      {/* Shared date range — only date is synced; dimension filters stay per-type
-          because column sets differ between the two tables. */}
-      <div className="p-3 rounded-lg border border-purple-500/20 bg-slate-800/40 backdrop-blur-xl flex flex-wrap items-center gap-3 text-sm">
-        <span className="text-xs font-medium text-gray-300">공통 기간</span>
-        <label className="inline-flex items-center gap-1 text-xs text-gray-400">
-          <input
-            type="date"
-            value={searchFilter.dateFrom ?? targetFilter.dateFrom ?? ""}
-            onChange={(e) => setSharedDate("from", e.target.value || null)}
-            className="rounded border border-purple-500/30 bg-slate-900 px-2 py-1 text-xs text-gray-200 focus:border-cyan-500 focus:outline-none"
-          />
-          <span>~</span>
-          <input
-            type="date"
-            value={searchFilter.dateTo ?? targetFilter.dateTo ?? ""}
-            onChange={(e) => setSharedDate("to", e.target.value || null)}
-            className="rounded border border-purple-500/30 bg-slate-900 px-2 py-1 text-xs text-gray-200 focus:border-cyan-500 focus:outline-none"
-          />
-        </label>
-        {(sharedTermsLoading || sharedTargetValuesLoading) && (
-          <Loader2 size={12} className="animate-spin text-cyan-400" />
-        )}
-      </div>
-
-      <ViewsBar
-        baseUrl={`/api/brands/${encodeURIComponent(brand)}`}
-        activeViewId={activeViewId}
-        currentConfig={currentViewConfig}
-        onLoad={loadView}
-      />
-
       <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
         <TabsList>
           <TabsTrigger value="dashboard">
             <BarChart3 className="h-3.5 w-3.5" /> 대시보드
           </TabsTrigger>
           <TabsTrigger value="history">
-            <History className="h-3.5 w-3.5" /> 변경 히스토리
+            <History className="h-3.5 w-3.5" /> 캠페인 수정일지
           </TabsTrigger>
           {primary && (
             <TabsTrigger value="nicknames">
@@ -439,7 +405,42 @@ export default function BrandDetailPage() {
           )}
         </TabsList>
 
-        <TabsContent value="dashboard" className="space-y-6">
+        <TabsContent value="dashboard" className="space-y-4">
+          {/* Shared date range — only date is synced; dimension filters stay
+              per-type because column sets differ between the two tables.
+              Lives inside the dashboard tab because the other tabs (수정일지,
+              닉네임) don't use date or saved views. */}
+          <div className="space-y-2">
+            <div className="px-3 py-2 rounded-lg border border-purple-500/20 bg-slate-800/40 backdrop-blur-xl flex flex-wrap items-center gap-3 text-sm">
+              <span className="text-xs font-medium text-gray-300">공통 기간</span>
+              <label className="inline-flex items-center gap-1 text-xs text-gray-400">
+                <input
+                  type="date"
+                  value={searchFilter.dateFrom ?? targetFilter.dateFrom ?? ""}
+                  onChange={(e) => setSharedDate("from", e.target.value || null)}
+                  className="rounded border border-purple-500/30 bg-slate-900 px-2 py-1 text-xs text-gray-200 focus:border-cyan-500 focus:outline-none"
+                />
+                <span>~</span>
+                <input
+                  type="date"
+                  value={searchFilter.dateTo ?? targetFilter.dateTo ?? ""}
+                  onChange={(e) => setSharedDate("to", e.target.value || null)}
+                  className="rounded border border-purple-500/30 bg-slate-900 px-2 py-1 text-xs text-gray-200 focus:border-cyan-500 focus:outline-none"
+                />
+              </label>
+              {(sharedTermsLoading || sharedTargetValuesLoading) && (
+                <Loader2 size={12} className="animate-spin text-cyan-400" />
+              )}
+            </div>
+
+            <ViewsBar
+              baseUrl={`/api/brands/${encodeURIComponent(brand)}`}
+              activeViewId={activeViewId}
+              currentConfig={currentViewConfig}
+              onLoad={loadView}
+            />
+          </div>
+
           {/* One ChartBuilder at the top — it drives kind/X/Y/group for the
               brand. Uses the search-term table as its source (finer grain, has
               search_term / campaign_name dimensions). Its filter changes are
@@ -552,7 +553,18 @@ export default function BrandDetailPage() {
         </TabsContent>
 
         <TabsContent value="history" className="space-y-4">
-          <HistoryTab baseUrl={`/api/brands/${encodeURIComponent(brand)}`} />
+          {primary ? (
+            <CampaignLogTab
+              baseUrl={`/api/brands/${encodeURIComponent(brand)}`}
+              brand={brand}
+              primarySlug={primary.type.slug}
+              nicknames={nicknames}
+            />
+          ) : (
+            <div className="p-6 text-sm text-gray-500">
+              이 브랜드에 레포트가 없어 캠페인 수정일지를 표시할 수 없습니다.
+            </div>
+          )}
         </TabsContent>
 
         {primary && (

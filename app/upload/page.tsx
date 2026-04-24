@@ -1,13 +1,29 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, CheckCircle2, AlertCircle, Plus, Sparkles } from "lucide-react";
+import Link from "next/link";
+import {
+  Loader2,
+  CheckCircle2,
+  AlertCircle,
+  Tags,
+} from "lucide-react";
 import FileDrop from "@/components/upload/FileDrop";
-import HeaderMappingTable from "@/components/upload/HeaderMappingTable";
 import HeaderRowPicker from "@/components/upload/HeaderRowPicker";
+import BrandAssignmentTable from "@/components/upload/BrandAssignmentTable";
 import { parseSpreadsheet } from "@/lib/reports/parse";
-import { inferDataType, normalizeHeader, dedupeNames } from "@/lib/reports/infer";
+import {
+  compileRules,
+  matchBrand,
+  type Brand,
+  type BrandRule,
+} from "@/lib/brands/match";
+import {
+  ALL_KINDS,
+  buildPlanForKind,
+  type KindSchema,
+} from "@/lib/reports/report-kinds";
 import type {
   DataType,
   HeaderPlan,
@@ -15,25 +31,16 @@ import type {
   ReportType,
 } from "@/lib/reports/types";
 
-type Step = "pick" | "type" | "map" | "committing" | "done";
+type Step = "pick" | "kind" | "assign" | "committing" | "done";
 
 const CHUNK_SIZE = 8000;
 const CHUNK_PARALLEL = 6;
-/**
- * Streaming-mode overrides. Smaller chunks + lower parallelism reduce peak
- * payload size & pressure on Supabase/Cloudflare, which was returning sporadic
- * 502s on long uploads.
- */
 const CHUNK_SIZE_STREAMING = 3000;
 const CHUNK_PARALLEL_STREAMING = 3;
-/**
- * Files above this threshold use a streaming path that reads the file line-by-line
- * with Papa Parse, so the browser never materializes the whole CSV in memory.
- * Only CSV is supported for streaming — xlsx requires full-file parsing.
- */
-const LARGE_CSV_THRESHOLD = 100 * 1024 * 1024; // 100 MB
-/** Bytes of the file pulled into memory for header/preview detection in streaming mode. */
-const PREVIEW_SLICE_BYTES = 1 * 1024 * 1024; // 1 MB
+const LARGE_CSV_THRESHOLD = 100 * 1024 * 1024;
+const PREVIEW_SLICE_BYTES = 1 * 1024 * 1024;
+
+const CAMPAIGN_COL = "campaign_name";
 
 function isCsvFile(f: File): boolean {
   return f.name.toLowerCase().endsWith(".csv") || f.type === "text/csv";
@@ -57,6 +64,13 @@ interface BeginResponse {
   keyColumns: string[];
 }
 
+interface CampaignStat {
+  campaign_name: string;
+  row_count: number;
+  auto_brand_slug: string | null;
+  auto_rule_pattern: string | null;
+}
+
 export default function UploadPage() {
   const router = useRouter();
   const [step, setStep] = useState<Step>("pick");
@@ -65,37 +79,48 @@ export default function UploadPage() {
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
   const [previewRows, setPreviewRows] = useState<unknown[][]>([]);
   const [headerRowIdx, setHeaderRowIdx] = useState(0);
+  const [largeCsvMode, setLargeCsvMode] = useState(false);
+  const [fileQueue, setFileQueue] = useState<File[]>([]);
 
   const [existingTypes, setExistingTypes] = useState<ReportType[]>([]);
-  const [selectedSlug, setSelectedSlug] = useState<string>("");
+  const [brands, setBrands] = useState<Brand[]>([]);
+  const [rules, setRules] = useState<BrandRule[]>([]);
+  const compiledRules = useMemo(
+    () => compileRules(brands, rules),
+    [brands, rules],
+  );
+
+  const [selectedKind, setSelectedKind] = useState<string>("");
+  const [isNewKind, setIsNewKind] = useState(false);
+  const [newKindSlug, setNewKindSlug] = useState("");
+  const [newKindDisplayName, setNewKindDisplayName] = useState("");
   const [existingColumns, setExistingColumns] = useState<ReportColumn[]>([]);
 
-  const [newDisplayName, setNewDisplayName] = useState("");
-  const [newSlug, setNewSlug] = useState("");
-
   const [plan, setPlan] = useState<HeaderPlan[]>([]);
+  const [campaignStats, setCampaignStats] = useState<CampaignStat[]>([]);
+  const [assignments, setAssignments] = useState<Map<string, string>>(new Map());
+  const [scanningCampaigns, setScanningCampaigns] = useState(false);
+
   const [error, setError] = useState<string | null>(null);
-  const [resultSlug, setResultSlug] = useState<string | null>(null);
   const [progress, setProgress] = useState({ done: 0, total: 0, stage: "" });
-  /** When true, only the first PREVIEW_SLICE_BYTES of the file is in `rows`;
-   *  full data is streamed directly from disk on commit. */
-  const [largeCsvMode, setLargeCsvMode] = useState(false);
-  /** Files waiting after the current one. Consumed one-at-a-time so each keeps
-   *  its own type / mapping step. */
-  const [fileQueue, setFileQueue] = useState<File[]>([]);
-  /** Brand / group tag applied to every report_type created/updated in this
-   *  upload session. Letting the user set it once at the top of the page keeps
-   *  all files in a queue under the same brand. */
-  const [brandName, setBrandName] = useState("");
+  const [resultBrands, setResultBrands] = useState<
+    { slug: string; display_name: string }[]
+  >([]);
 
   useEffect(() => {
     fetch("/api/reports/types")
       .then((r) => r.json())
       .then((j) => setExistingTypes(j.types ?? []))
       .catch(() => {});
+    fetch("/api/brands/catalog")
+      .then((r) => r.json())
+      .then((j) => {
+        setBrands(j.brands ?? []);
+        setRules(j.rules ?? []);
+      })
+      .catch(() => {});
   }, []);
 
-  // Prevent accidental reload/close while an upload is in progress
   useEffect(() => {
     if (step !== "committing") return;
     const handler = (e: BeforeUnloadEvent) => {
@@ -127,15 +152,69 @@ export default function UploadPage() {
         return;
       }
       setHeaders(parsed.headers);
-      // In large mode parsed.rows is only rows from the first 1MB — used for
-      // preview/type inference. The full file is streamed later at commit time.
       setRows(parsed.rows);
       setPreviewRows(parsed.previewRows);
       setHeaderRowIdx(parsed.headerRowIndex);
-      setStep("type");
+
+      // User picks the report kind manually on the next step. No auto-detection.
+      setStep("kind");
     } catch (e) {
       setError(e instanceof Error ? e.message : "파일 파싱 실패");
     }
+  }
+
+  /** User picked a kind — build the HeaderPlan from the fixed schema and
+   *  proceed straight to brand assignment. Skip the column-mapping step
+   *  entirely since Amazon always emits the same columns per kind. */
+  async function pickKindSchema(schema: KindSchema) {
+    setError(null);
+    const { plan: builtPlan, missing } = buildPlanForKind(schema, headers);
+    if (missing.length > 0) {
+      const required = missing
+        .map((m) => `${m.column_name} (예: ${m.source_headers[0]})`)
+        .join(", ");
+      setError(
+        `선택한 레포트 종류(${schema.display_name})에 필요한 컬럼이 파일에 없습니다: ${required}`,
+      );
+      return;
+    }
+    setSelectedKind(schema.slug);
+
+    // Check whether this kind already has a stored report_type (any brand).
+    const existing = existingTypes.find((t) => t.kind === schema.slug);
+    if (existing) {
+      setIsNewKind(false);
+      const res = await fetch(`/api/reports/types/${existing.slug}`);
+      if (!res.ok) {
+        setError("레포트 타입 조회 실패");
+        return;
+      }
+      const json = (await res.json()) as {
+        type: ReportType;
+        columns: ReportColumn[];
+      };
+      setExistingColumns(json.columns);
+      // Adjust is_new on the plan by checking against existing schema.
+      const existingCols = new Set(json.columns.map((c) => c.column_name));
+      setPlan(
+        builtPlan.map((h) => ({ ...h, is_new: !existingCols.has(h.column_name) })),
+      );
+    } else {
+      setIsNewKind(true);
+      setNewKindSlug(schema.slug);
+      setNewKindDisplayName(schema.display_name);
+      setExistingColumns([]);
+      setPlan(builtPlan);
+    }
+
+    // Campaign source header lives in the plan we just built — pass it
+    // explicitly since React state hasn't re-run the memo yet.
+    const campaignEntry = builtPlan.find((h) => h.column_name === CAMPAIGN_COL);
+    if (!campaignEntry) {
+      setError(`선택한 레포트 종류에 \`${CAMPAIGN_COL}\` 매핑이 없습니다.`);
+      return;
+    }
+    await goToAssign(campaignEntry.source_header);
   }
 
   const reparseWithHeaderRow = useCallback(
@@ -150,192 +229,313 @@ export default function UploadPage() {
         setRows(parsed.rows);
         setPreviewRows(parsed.previewRows);
         setHeaderRowIdx(parsed.headerRowIndex);
-        if (step === "map") {
-          await rebuildPlan(parsed.headers, parsed.rows, selectedSlug, existingColumns);
-        }
       } catch (e) {
         setError(e instanceof Error ? e.message : "재파싱 실패");
       }
     },
-    [file, step, selectedSlug, existingColumns, largeCsvMode],
+    [file, largeCsvMode],
   );
 
-  async function rebuildPlan(
-    newHeaders: string[],
-    newRows: Record<string, unknown>[],
-    slug: string,
-    cols: ReportColumn[],
-  ) {
-    const suggestedNames = dedupeNames(
-      newHeaders.map((h, i) => normalizeHeader(h, i)),
-    );
-    if (!slug) {
-      const p: HeaderPlan[] = newHeaders.map((h, i) => {
-        const sampleValues = newRows.slice(0, 50).map((r) => r[h]);
-        return {
-          source_header: h,
-          column_name: suggestedNames[i],
-          data_type: inferDataType(sampleValues),
-          is_key: false,
-          is_new: true,
-          include: true,
-        };
-      });
-      setPlan(p);
-      return;
-    }
-    const byHeader = new Map(cols.map((c) => [c.source_header, c]));
-    const takenNames = new Set(cols.map((c) => c.column_name));
-    const p: HeaderPlan[] = newHeaders.map((h, i) => {
-      const match = byHeader.get(h);
-      if (match) {
-        return {
-          source_header: h,
-          column_name: match.column_name,
-          data_type: match.data_type,
-          is_key: match.is_key,
-          is_new: false,
-          include: true,
-        };
-      }
-      let name = suggestedNames[i];
-      let n = 2;
-      while (takenNames.has(name)) name = `${suggestedNames[i]}_${n++}`;
-      takenNames.add(name);
-      const sampleValues = newRows.slice(0, 50).map((r) => r[h]);
-      return {
-        source_header: h,
-        column_name: name,
-        data_type: inferDataType(sampleValues),
-        is_key: false,
-        is_new: true,
-        include: true,
-      };
-    });
-    setPlan(p);
-  }
+  const campaignSourceHeader = useMemo(() => {
+    const entry = plan.find((h) => h.include && h.column_name === CAMPAIGN_COL);
+    return entry?.source_header ?? null;
+  }, [plan]);
 
-  async function pickExisting(slug: string) {
-    setSelectedSlug(slug);
-    if (!slug) {
-      await rebuildPlan(headers, rows, "", []);
-      setExistingColumns([]);
-      setStep("map");
+  /** Called both from the (now-removed) map step and immediately after the
+   *  user picks a kind. `explicitCampaignHeader` lets `pickKindSchema` pass
+   *  the source header directly without waiting for React to re-run the
+   *  `campaignSourceHeader` memo. */
+  async function goToAssign(explicitCampaignHeader?: string) {
+    const sourceHeader = explicitCampaignHeader ?? campaignSourceHeader;
+    if (!sourceHeader) {
+      setError(
+        `업로드에는 \`${CAMPAIGN_COL}\` 컬럼이 필요합니다.`,
+      );
       return;
     }
-    const res = await fetch(`/api/reports/types/${slug}`);
-    if (!res.ok) {
-      setError("레포트 타입 조회 실패");
+    if (brands.length === 0) {
+      setError(
+        "등록된 브랜드가 없습니다. /brands/manage 에서 최소 1개 브랜드를 추가하세요.",
+      );
       return;
     }
-    const json = (await res.json()) as { type: ReportType; columns: ReportColumn[] };
-    setExistingColumns(json.columns);
-    await rebuildPlan(headers, rows, slug, json.columns);
-    setStep("map");
+    setError(null);
+
+    let stats: CampaignStat[];
+    if (largeCsvMode && file) {
+      setScanningCampaigns(true);
+      setProgress({ done: 0, total: 0, stage: "캠페인 스캔 중" });
+      try {
+        stats = await scanCampaignsStreaming(
+          file,
+          headerRowIdx,
+          headers,
+          sourceHeader,
+          (bytesCursor, totalBytes) => {
+            setProgress({
+              done: 0,
+              total: 0,
+              stage: `캠페인 스캔 ${Math.min(
+                100,
+                Math.round((bytesCursor / totalBytes) * 100),
+              )}%`,
+            });
+          },
+        );
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "캠페인 스캔 실패");
+        setScanningCampaigns(false);
+        return;
+      } finally {
+        setScanningCampaigns(false);
+      }
+    } else {
+      const counts = new Map<string, number>();
+      for (const r of rows) {
+        const v = r[sourceHeader];
+        const name = v == null ? "" : String(v);
+        if (!name) continue;
+        counts.set(name, (counts.get(name) ?? 0) + 1);
+      }
+      stats = Array.from(counts.entries()).map(([n, c]) => ({
+        campaign_name: n,
+        row_count: c,
+        auto_brand_slug: null,
+        auto_rule_pattern: null,
+      }));
+    }
+
+    const auto = new Map<string, string>();
+    for (const s of stats) {
+      const hit = matchBrand(s.campaign_name, compiledRules);
+      if (hit) {
+        s.auto_brand_slug = hit.brand_slug;
+        s.auto_rule_pattern = `${hit.match_type}: ${hit.pattern}`;
+        auto.set(s.campaign_name, hit.brand_slug);
+      } else {
+        auto.set(s.campaign_name, "");
+      }
+    }
+    stats.sort((a, b) => b.row_count - a.row_count);
+    setCampaignStats(stats);
+    setAssignments(auto);
+    setStep("assign");
   }
 
   async function commit() {
+    if (!file) return;
     setError(null);
-    const isNewType = !selectedSlug;
-    const slug = isNewType ? newSlug : selectedSlug;
-    const display_name = isNewType
-      ? newDisplayName
-      : existingTypes.find((t) => t.slug === selectedSlug)?.display_name || slug;
 
-    if (isNewType) {
-      if (!newDisplayName.trim()) {
-        setError("표시 이름이 필요합니다.");
+    const brandToCampaigns = new Map<string, Set<string>>();
+    let unassigned = 0;
+    for (const s of campaignStats) {
+      const b = assignments.get(s.campaign_name) || "";
+      if (!b) {
+        unassigned++;
+        continue;
+      }
+      const set = brandToCampaigns.get(b) ?? new Set<string>();
+      set.add(s.campaign_name);
+      brandToCampaigns.set(b, set);
+    }
+    if (unassigned > 0) {
+      setError(`아직 분류되지 않은 캠페인이 ${unassigned}개 있습니다.`);
+      return;
+    }
+    if (brandToCampaigns.size === 0) {
+      setError("분류된 캠페인이 없습니다.");
+      return;
+    }
+
+    let kindSlug: string;
+    let kindDisplay: string;
+    if (isNewKind) {
+      kindSlug = newKindSlug.trim();
+      kindDisplay = newKindDisplayName.trim();
+      if (!kindSlug) {
+        setError(
+          "kind 슬러그가 비어 있습니다. 위쪽 'kind slug' 입력란에 값을 넣어주세요 (예: sp_search_term).",
+        );
         return;
       }
-      if (!/^[a-z][a-z0-9_]{0,62}$/.test(newSlug)) {
-        setError("slug는 소문자로 시작, [a-z0-9_] 만 허용 (최대 63자).");
+      if (!/^[a-z][a-z0-9_]{0,40}$/.test(kindSlug)) {
+        setError(
+          `kind 슬러그 '${kindSlug}' 가 유효하지 않습니다. 소문자로 시작, [a-z0-9_] 만 사용, 최대 41자.`,
+        );
         return;
       }
+      if (!kindDisplay) {
+        setError("kind 표시 이름이 비어 있습니다. 위쪽 'kind 표시 이름' 입력란을 채워주세요.");
+        return;
+      }
+    } else {
+      if (!selectedKind) {
+        setError("kind가 선택되지 않았습니다.");
+        return;
+      }
+      kindSlug = selectedKind;
+      const sample = existingTypes.find((t) => t.kind === kindSlug);
+      kindDisplay = sample?.display_name?.split("·")[0]?.trim() ?? kindSlug;
     }
 
     setStep("committing");
-    setProgress({ done: 0, total: largeCsvMode ? 0 : rows.length, stage: "스키마 준비 중" });
+    setProgress({ done: 0, total: 0, stage: "스키마 준비 중" });
 
-    // 1) begin
-    const beginRes = await fetch("/api/reports/commit/begin", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        slug,
-        display_name,
-        isNewType,
-        headerPlan: plan,
-        fileName: file?.name ?? "upload",
-        // Row count is unknown in streaming mode — pass 0; server just stores it.
-        expectedRowCount: largeCsvMode ? 0 : rows.length,
-        brand: brandName.trim() || null,
-      }),
-    });
-    if (!beginRes.ok) {
-      const j = await beginRes.json().catch(() => ({}));
-      setError(j.error ?? `begin failed (${beginRes.status})`);
-      setStep("map");
-      return;
+    const brandTargets = new Map<string, BeginResponse>();
+    const brandForCampaign = new Map<string, string>();
+    for (const [brandSlug, campaigns] of brandToCampaigns) {
+      for (const c of campaigns) brandForCampaign.set(c, brandSlug);
+
+      const brand = brands.find((b) => b.slug === brandSlug);
+      if (!brand) {
+        setError(`브랜드를 찾지 못했습니다: ${brandSlug}`);
+        setStep("assign");
+        return;
+      }
+      const typeSlug = `${kindSlug}__${brandSlug}`;
+      const existing = existingTypes.find((t) => t.slug === typeSlug);
+      const isNewType = !existing;
+      const displayName = `${brand.display_name} · ${kindDisplay}`;
+
+      const beginRes = await fetch("/api/reports/commit/begin", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          slug: typeSlug,
+          display_name: displayName,
+          isNewType,
+          headerPlan: plan,
+          fileName: file.name,
+          expectedRowCount: 0,
+          brand: brand.display_name,
+          kind: kindSlug,
+        }),
+      });
+      if (!beginRes.ok) {
+        const j = await beginRes.json().catch(() => ({}));
+        setError(
+          `${brand.display_name}: begin 실패 — ${j.error ?? beginRes.status}`,
+        );
+        setStep("assign");
+        return;
+      }
+      brandTargets.set(brandSlug, (await beginRes.json()) as BeginResponse);
     }
-    const begin = (await beginRes.json()) as BeginResponse;
 
-    // 2) chunk upload — streaming or in-memory
-    let done = 0;
+    let totalDone = 0;
     try {
-      if (largeCsvMode && file) {
-        done = await commitStreaming(file, begin, headerRowIdx, headers, (progress) =>
-          setProgress(progress),
+      if (largeCsvMode) {
+        totalDone = await commitStreamingMultiBrand(
+          file,
+          brandTargets,
+          brandForCampaign,
+          headerRowIdx,
+          headers,
+          campaignSourceHeader!,
+          (p) => setProgress(p),
         );
       } else {
-        done = await commitInMemory(rows, begin, (progress) => setProgress(progress));
+        totalDone = await commitInMemoryMultiBrand(
+          rows,
+          brandTargets,
+          brandForCampaign,
+          campaignSourceHeader!,
+          (p) => setProgress(p),
+        );
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "업로드 실패");
-      setStep("map");
+      setStep("assign");
       return;
     }
 
-    // 3) finalize
-    setProgress({ done, total: done, stage: "마무리 중" });
-    await fetch("/api/reports/commit/finalize", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ upload_id: begin.upload_id, row_count: done }),
-    }).catch(() => {}); // non-critical
+    setProgress({ done: totalDone, total: totalDone, stage: "마무리 중" });
+    await Promise.all(
+      Array.from(brandTargets.values()).map((t) =>
+        fetch("/api/reports/commit/finalize", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ upload_id: t.upload_id, row_count: totalDone }),
+        }).catch(() => {}),
+      ),
+    );
 
-    setResultSlug(slug);
+    setResultBrands(
+      Array.from(brandTargets.keys()).map((slug) => {
+        const b = brands.find((x) => x.slug === slug);
+        return { slug, display_name: b?.display_name ?? slug };
+      }),
+    );
     setStep("done");
   }
 
-  function slugify(s: string) {
-    return (
-      s
-        .toLowerCase()
-        .trim()
-        .replace(/[^a-z0-9]+/g, "_")
-        .replace(/^_+|_+$/g, "")
-        .slice(0, 40) || ""
-    );
-  }
-
-  const newCount = plan.filter((h) => h.is_new && h.include).length;
-  const pct = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
-  // In streaming mode total is 0 but stage text carries "스트리밍 업로드 NN% …" — parse it for the bar.
+  const totalAssignedRows = useMemo(() => {
+    let n = 0;
+    for (const s of campaignStats) {
+      const b = assignments.get(s.campaign_name) || "";
+      if (b) n += s.row_count;
+    }
+    return n;
+  }, [campaignStats, assignments]);
+  const unassignedCount = useMemo(
+    () =>
+      campaignStats.filter((s) => !(assignments.get(s.campaign_name) || "")).length,
+    [campaignStats, assignments],
+  );
+  const assignedBrandsCount = useMemo(() => {
+    const s = new Set<string>();
+    for (const v of assignments.values()) if (v) s.add(v);
+    return s.size;
+  }, [assignments]);
+  const pct = progress.total
+    ? Math.round((progress.done / progress.total) * 100)
+    : 0;
   const streamingPct = (() => {
     if (!largeCsvMode) return null;
     const m = /(\d+)%/.exec(progress.stage);
     return m ? Number(m[1]) : 0;
   })();
 
+  function resetPerFile() {
+    setHeaders([]);
+    setRows([]);
+    setPreviewRows([]);
+    setHeaderRowIdx(0);
+    setPlan([]);
+    setResultBrands([]);
+    setSelectedKind("");
+    setIsNewKind(false);
+    setNewKindSlug("");
+    setNewKindDisplayName("");
+    setExistingColumns([]);
+    setCampaignStats([]);
+    setAssignments(new Map());
+    setProgress({ done: 0, total: 0, stage: "" });
+    setLargeCsvMode(false);
+    fetch("/api/reports/types")
+      .then((r) => r.json())
+      .then((j) => setExistingTypes(j.types ?? []))
+      .catch(() => {});
+  }
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold bg-gradient-to-r from-cyan-400 to-purple-400 bg-clip-text text-transparent">
-          업로드
-        </h1>
-        <p className="text-gray-400 mt-2">
-          CSV 또는 xlsx 파일을 올려 레포트를 저장합니다.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-bold bg-gradient-to-r from-cyan-400 to-purple-400 bg-clip-text text-transparent">
+            업로드
+          </h1>
+          <p className="text-gray-400 mt-2">
+            CSV 또는 xlsx 파일을 올려 레포트를 저장합니다. 캠페인을 브랜드별로
+            자동 분류하여 각 브랜드의 테이블에 저장합니다.
+          </p>
+        </div>
+        <Link
+          href="/brands/manage"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-purple-500/30 text-sm text-gray-300 hover:bg-cyan-500/10 hover:border-cyan-500/40 whitespace-nowrap"
+        >
+          <Tags size={14} /> 브랜드 관리
+        </Link>
       </div>
 
       {error && (
@@ -347,20 +547,6 @@ export default function UploadPage() {
 
       {step === "pick" && (
         <div className="space-y-3">
-          <div className="p-4 rounded-lg border border-purple-500/20 bg-slate-800/40 backdrop-blur-xl space-y-2">
-            <label className="text-xs font-medium text-gray-300">
-              브랜드 / 그룹명{" "}
-              <span className="text-gray-500 font-normal">
-                (선택 — 서치텀·타겟 두 파일을 같은 값으로 입력하면 한 대시보드에서 함께 보입니다)
-              </span>
-            </label>
-            <input
-              value={brandName}
-              onChange={(e) => setBrandName(e.target.value)}
-              placeholder="예: 프로포그 / KT Core / …"
-              className="w-full rounded-lg border border-purple-500/30 bg-slate-900 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-500 focus:border-cyan-500 focus:outline-none"
-            />
-          </div>
           <FileDrop
             onFiles={(files) => {
               if (files.length === 0) return;
@@ -369,25 +555,30 @@ export default function UploadPage() {
               void handleFile(first);
             }}
           />
+          {brands.length === 0 && (
+            <div className="flex items-start gap-2 p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-300 text-xs">
+              <AlertCircle size={14} />
+              <span>
+                등록된 브랜드가 없습니다. 업로드 전에{" "}
+                <Link href="/brands/manage" className="underline">
+                  브랜드 관리
+                </Link>
+                에서 최소 1개 이상 추가하세요.
+              </span>
+            </div>
+          )}
         </div>
       )}
-      {(step === "type" || step === "map" || step === "committing" || step === "done") &&
-        brandName && (
-          <div className="text-xs text-gray-400">
-            브랜드: <span className="text-cyan-300 font-semibold">{brandName}</span>
-          </div>
-        )}
+
       {fileQueue.length > 0 && step !== "pick" && (
         <div className="flex items-center gap-2 p-3 rounded-lg border border-cyan-500/30 bg-cyan-500/10 text-cyan-200 text-sm">
           <span className="font-semibold">대기열 {fileQueue.length}개</span>
           <span className="text-gray-400">—</span>
-          <span className="truncate">
-            {fileQueue.map((f) => f.name).join(", ")}
-          </span>
+          <span className="truncate">{fileQueue.map((f) => f.name).join(", ")}</span>
         </div>
       )}
 
-      {(step === "type" || step === "map") && (
+      {(step === "kind" || step === "assign") && (
         <div className="text-sm text-gray-400">
           파일: <span className="font-mono text-gray-300">{file?.name}</span>
           {file && <> · <span className="text-gray-500">{fmtBytes(file.size)}</span></>}
@@ -401,7 +592,7 @@ export default function UploadPage() {
         </div>
       )}
 
-      {(step === "type" || step === "map") && previewRows.length > 0 && (
+      {step === "kind" && previewRows.length > 0 && (
         <HeaderRowPicker
           previewRows={previewRows}
           headerRowIndex={headerRowIdx}
@@ -409,90 +600,74 @@ export default function UploadPage() {
         />
       )}
 
-      {step === "type" && (
+      {step === "kind" && (
         <div className="space-y-3">
-          <h2 className="font-medium text-gray-200">레포트 타입 선택</h2>
+          <h2 className="font-medium text-gray-200">레포트 종류 선택</h2>
+          <p className="text-xs text-gray-500">
+            이 파일이 어떤 레포트인지 고르세요. 컬럼 매핑은 자동으로 처리되어
+            바로 브랜드 분배 단계로 넘어갑니다.
+          </p>
           <div className="grid grid-cols-2 gap-4">
-            <button
-              onClick={() => pickExisting("")}
-              className="rounded-lg border border-dashed border-purple-500/30 bg-slate-800/40 backdrop-blur-xl p-4 hover:bg-cyan-500/10 hover:border-cyan-500/40 text-left transition-colors"
-            >
-              <div className="flex items-center gap-2 font-medium text-cyan-300">
-                <Plus size={16} /> 새 타입 만들기
-              </div>
-              <p className="text-xs text-gray-400 mt-1">이 파일 형식으로 새 테이블을 만듭니다</p>
-            </button>
-            {existingTypes.map((t) => (
+            {ALL_KINDS.map((schema) => (
               <button
-                key={t.slug}
-                onClick={() => pickExisting(t.slug)}
-                className="rounded-lg border border-purple-500/20 bg-slate-800/40 backdrop-blur-xl shadow-lg shadow-purple-500/10 p-4 hover:bg-white/5 hover:border-cyan-500/30 text-left transition-colors"
+                key={schema.slug}
+                onClick={() => pickKindSchema(schema)}
+                disabled={scanningCampaigns}
+                className="rounded-lg border border-purple-500/20 bg-slate-800/40 backdrop-blur-xl p-4 hover:bg-cyan-500/10 hover:border-cyan-500/40 text-left transition-colors disabled:opacity-50 disabled:pointer-events-none"
               >
-                <div className="font-medium text-gray-200">{t.display_name}</div>
-                <div className="text-xs text-gray-500 font-mono">{t.slug}</div>
+                <div className="font-medium text-gray-100">{schema.display_name}</div>
+                <div className="text-xs text-gray-500 font-mono mt-1">
+                  {schema.slug}
+                </div>
+                <div className="text-[11px] text-gray-400 mt-2">
+                  {schema.description}
+                </div>
               </button>
             ))}
+          </div>
+          {scanningCampaigns && (
+            <div className="inline-flex items-center gap-1.5 text-xs text-cyan-300">
+              <Loader2 size={12} className="animate-spin" />
+              {progress.stage || "준비 중"}
+            </div>
+          )}
+          <div>
+            <button
+              onClick={() => setStep("pick")}
+              className="text-xs text-gray-400 hover:text-cyan-300"
+            >
+              ← 파일 다시 선택
+            </button>
           </div>
         </div>
       )}
 
-      {step === "map" && (
+      {step === "assign" && (
         <div className="space-y-4">
-          {!selectedSlug && (
-            <div className="grid grid-cols-2 gap-4 p-4 rounded-lg border border-purple-500/20 bg-slate-800/40 backdrop-blur-xl shadow-lg shadow-purple-500/10">
-              <label className="space-y-1">
-                <span className="text-xs font-medium text-gray-400">표시 이름</span>
-                <input
-                  value={newDisplayName}
-                  onChange={(e) => {
-                    setNewDisplayName(e.target.value);
-                    if (!newSlug || newSlug === slugify(newDisplayName))
-                      setNewSlug(slugify(e.target.value));
-                  }}
-                  placeholder="예: SP 캠페인 일별"
-                  className="w-full rounded-lg border border-purple-500/30 bg-slate-800 px-3 py-2 text-sm text-gray-200 placeholder:text-gray-500 focus:border-cyan-500 focus:outline-none"
-                />
-              </label>
-              <label className="space-y-1">
-                <span className="text-xs font-medium text-gray-400">slug (테이블 식별자)</span>
-                <input
-                  value={newSlug}
-                  onChange={(e) => setNewSlug(slugify(e.target.value))}
-                  placeholder="sp_campaign_daily"
-                  className="w-full rounded-lg border border-purple-500/30 bg-slate-800 px-3 py-2 font-mono text-sm text-gray-200 placeholder:text-gray-500 focus:border-cyan-500 focus:outline-none"
-                />
-              </label>
-            </div>
-          )}
-
-          {newCount > 0 && (
-            <div className="flex items-center gap-2 p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-300 text-sm">
-              <Sparkles size={16} />
-              <span>
-                <strong className="bg-gradient-to-r from-amber-400 to-yellow-400 bg-clip-text text-transparent">{newCount}개</strong>의 새 열이 DB에 추가됩니다. 열 이름과 타입을 확인하세요.
-              </span>
-            </div>
-          )}
-
-          <HeaderMappingTable
-            plan={plan}
-            setPlan={setPlan}
-            allowKeyEdit={!selectedSlug}
-            sampleRow={rows[0]}
+          <div className="text-sm text-gray-300">
+            캠페인별 브랜드 분류를 확인하세요. 자동 매칭된 것은 필요 시 수정할 수
+            있고, 미분류된 캠페인은 반드시 브랜드를 지정해야 업로드가 진행됩니다.
+          </div>
+          <BrandAssignmentTable
+            stats={campaignStats}
+            brands={brands}
+            rules={compiledRules}
+            assignments={assignments}
+            onChange={setAssignments}
           />
-
           <div className="flex justify-end gap-2">
             <button
-              onClick={() => setStep("type")}
-              className="inline-flex items-center justify-center h-10 px-4 rounded-md text-sm font-medium border border-cyan-500/30 bg-black/40 backdrop-blur-xl text-cyan-300 hover:bg-cyan-500/20 transition-colors"
+              onClick={() => setStep("kind")}
+              className="inline-flex items-center justify-center h-10 px-4 rounded-md text-sm font-medium border border-cyan-500/30 bg-black/40 backdrop-blur-xl text-cyan-300 hover:bg-cyan-500/20"
             >
               뒤로
             </button>
             <button
               onClick={commit}
-              className="inline-flex items-center justify-center h-10 px-4 rounded-md text-sm font-medium bg-gradient-to-r from-cyan-500 to-purple-500 text-white hover:from-cyan-600 hover:to-purple-600 shadow-lg shadow-cyan-500/50 transition-colors"
+              disabled={unassignedCount > 0 || campaignStats.length === 0}
+              className="inline-flex items-center justify-center h-10 px-4 rounded-md text-sm font-medium bg-gradient-to-r from-cyan-500 to-purple-500 text-white hover:from-cyan-600 hover:to-purple-600 shadow-lg shadow-cyan-500/50 disabled:opacity-40"
             >
-              커밋 ({largeCsvMode ? `${fmtBytes(file?.size ?? 0)} 스트리밍` : `${rows.length.toLocaleString()}행`})
+              커밋 ({totalAssignedRows.toLocaleString()}행, {assignedBrandsCount}개 브랜드)
             </button>
           </div>
         </div>
@@ -510,7 +685,7 @@ export default function UploadPage() {
                 </>
               ) : progress.done > 0 ? (
                 <>
-                  : <span className="bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent font-semibold">{progress.done.toLocaleString()}</span> 행 업로드 완료
+                  : <span className="bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent font-semibold">{progress.done.toLocaleString()}</span> 행
                 </>
               ) : null}
             </span>
@@ -523,79 +698,62 @@ export default function UploadPage() {
           </div>
           <p className="text-xs text-gray-500">
             {largeCsvMode
-              ? `파일을 읽으면서 ${CHUNK_SIZE_STREAMING.toLocaleString()}행씩 ${CHUNK_PARALLEL_STREAMING}개 병렬 업로드 (transient 502는 자동 재시도). 탭을 닫지 마세요.`
-              : `대용량 파일은 ${CHUNK_SIZE.toLocaleString()}행씩 ${CHUNK_PARALLEL}개 병렬로 업로드합니다. 브라우저 탭을 닫지 마세요.`}
+              ? `파일을 읽으면서 브랜드별로 ${CHUNK_SIZE_STREAMING.toLocaleString()}행씩 업로드. 탭을 닫지 마세요.`
+              : `브랜드별로 ${CHUNK_SIZE.toLocaleString()}행씩 ${CHUNK_PARALLEL}개 병렬 업로드.`}
           </p>
         </div>
       )}
 
-      {step === "done" && resultSlug && (
+      {step === "done" && resultBrands.length > 0 && (
         <div className="space-y-4">
           <div className="flex items-center gap-2 p-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
             <CheckCircle2 size={20} />
             <span>
-              <strong className="bg-gradient-to-r from-emerald-400 to-green-400 bg-clip-text text-transparent">{progress.done.toLocaleString()}행</strong> 저장 완료.
+              <strong className="bg-gradient-to-r from-emerald-400 to-green-400 bg-clip-text text-transparent">
+                {progress.done.toLocaleString()}행
+              </strong>{" "}
+              저장 완료 · {resultBrands.length}개 브랜드
             </span>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => router.push(`/reports/${resultSlug}`)}
-              className="inline-flex items-center justify-center h-10 px-4 rounded-md text-sm font-medium bg-gradient-to-r from-cyan-500 to-purple-500 text-white hover:from-cyan-600 hover:to-purple-600 shadow-lg shadow-cyan-500/50 transition-colors"
-            >
-              레포트 보기
-            </button>
+            {resultBrands.map((b) => (
+              <Link
+                key={b.slug}
+                href={`/brands/${encodeURIComponent(b.display_name)}`}
+                className="inline-flex items-center justify-center h-9 px-3 rounded-md text-xs font-medium border border-cyan-500/30 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20"
+              >
+                {b.display_name} 대시보드
+              </Link>
+            ))}
             {fileQueue.length > 0 && (
               <button
                 onClick={() => {
                   const [next, ...rest] = fileQueue;
                   setFileQueue(rest);
-                  // Reset per-file state, then feed the next file through the
-                  // normal handler which re-triggers parse → type → map.
-                  setHeaders([]);
-                  setRows([]);
-                  setPreviewRows([]);
-                  setHeaderRowIdx(0);
-                  setPlan([]);
-                  setResultSlug(null);
-                  setSelectedSlug("");
-                  setExistingColumns([]);
-                  setNewDisplayName("");
-                  setNewSlug("");
-                  setProgress({ done: 0, total: 0, stage: "" });
-                  setLargeCsvMode(false);
-                  // Refresh the existing-types list so the newly-created one
-                  // (from this upload) shows up for the next file.
-                  fetch("/api/reports/types")
-                    .then((r) => r.json())
-                    .then((j) => setExistingTypes(j.types ?? []))
-                    .catch(() => {});
+                  resetPerFile();
                   void handleFile(next);
                 }}
-                className="inline-flex items-center justify-center h-10 px-4 rounded-md text-sm font-medium bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:from-purple-600 hover:to-pink-600 shadow-lg shadow-purple-500/50 transition-colors"
+                className="inline-flex items-center justify-center h-9 px-3 rounded-md text-sm font-medium bg-gradient-to-r from-purple-500 to-pink-500 text-white"
               >
-                다음 파일 올리기 ({fileQueue.length}개 대기)
+                다음 파일 ({fileQueue.length}개 대기)
               </button>
             )}
             <button
               onClick={() => {
                 setStep("pick");
                 setFile(null);
-                setHeaders([]);
-                setRows([]);
-                setPreviewRows([]);
-                setHeaderRowIdx(0);
-                setPlan([]);
-                setResultSlug(null);
-                setSelectedSlug("");
-                setNewDisplayName("");
-                setNewSlug("");
-                setProgress({ done: 0, total: 0, stage: "" });
-                setLargeCsvMode(false);
                 setFileQueue([]);
+                resetPerFile();
               }}
-              className="inline-flex items-center justify-center h-10 px-4 rounded-md text-sm font-medium border border-cyan-500/30 bg-black/40 backdrop-blur-xl text-cyan-300 hover:bg-cyan-500/20 transition-colors"
+              className="inline-flex items-center justify-center h-9 px-3 rounded-md text-sm font-medium border border-cyan-500/30 bg-black/40 backdrop-blur-xl text-cyan-300 hover:bg-cyan-500/20"
             >
-              {fileQueue.length > 0 ? "대기열 비우기 / 처음부터" : "다른 파일 올리기"}
+              {fileQueue.length > 0 ? "대기열 비우기" : "다른 파일 올리기"}
+            </button>
+            <button
+              onClick={() => router.push("/reports")}
+              className="inline-flex items-center justify-center h-9 px-3 rounded-md text-sm font-medium text-gray-400 hover:text-cyan-300"
+            >
+              전체 레포트 보기
             </button>
           </div>
         </div>
@@ -604,26 +762,21 @@ export default function UploadPage() {
   );
 }
 
-type ProgressState = { done: number; total: number; stage: string };
-
-interface BeginForCommit {
-  upload_id: string;
-  tableName: string;
-  columnNames: string[];
-  keyColumns: string[];
-  dataTypes: BeginResponse["dataTypes"];
-  sourceHeaders: string[];
+function slugify(s: string) {
+  return (
+    s
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 40) || ""
+  );
 }
 
-/**
- * Client-side retry for the chunk API call. The server-side already retries
- * PostgREST calls against Supabase, but transient 502s can also hit us
- * between the browser and our own Next.js route (Vercel/Cloudflare edge),
- * or a specific chunk can genuinely hit PostgREST timeouts.
- * Retries up to 5 times with exponential backoff.
- */
+type ProgressState = { done: number; total: number; stage: string };
+
 async function sendChunkToServer(
-  begin: BeginForCommit,
+  begin: BeginResponse,
   rows: unknown[][],
 ): Promise<void> {
   const body = JSON.stringify({
@@ -647,7 +800,6 @@ async function sendChunkToServer(
       });
       if (res.ok) return;
       const isTransient = TRANSIENT.has(res.status);
-      // Body may be JSON with {error} or HTML (gateway error pages).
       const text = await res.text().catch(() => "");
       let msg: string;
       try {
@@ -656,62 +808,76 @@ async function sendChunkToServer(
         msg = `chunk failed (${res.status})`;
       }
       lastErr = msg;
-      // Also retry when the server bubbled up an "HTTP 5xx" from its PostgREST call.
       const isServerBubbled5xx = /HTTP 5\d{2}/.test(msg);
       if (!isTransient && !isServerBubbled5xx) throw new Error(msg);
       if (attempt === MAX_ATTEMPTS - 1) throw new Error(msg);
     } catch (e) {
-      // Network-level error (e.g. fetch rejected). Retry unless final attempt.
       if (attempt === MAX_ATTEMPTS - 1) {
         throw e instanceof Error ? e : new Error(String(e));
       }
       lastErr = e instanceof Error ? e.message : String(e);
     }
-    const delay = Math.min(20_000, 1000 * 2 ** attempt); // 1s, 2s, 4s, 8s, 16s
+    const delay = Math.min(20_000, 1000 * 2 ** attempt);
     await new Promise((r) => setTimeout(r, delay));
   }
   throw new Error(lastErr ?? "chunk failed after retries");
 }
 
-/** Existing in-memory path for small files. */
-async function commitInMemory(
+/** In-memory commit routed per brand. Rows in each brand's buffer are uploaded
+ *  in CHUNK_SIZE batches with CHUNK_PARALLEL requests in flight. */
+async function commitInMemoryMultiBrand(
   rows: Record<string, unknown>[],
-  begin: BeginResponse,
+  targets: Map<string, BeginResponse>,
+  brandForCampaign: Map<string, string>,
+  campaignSourceHeader: string,
   onProgress: (p: ProgressState) => void,
 ): Promise<number> {
-  onProgress({ done: 0, total: rows.length, stage: "데이터 업로드 중" });
-  const batches: Record<string, unknown>[][] = [];
-  for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
-    batches.push(rows.slice(i, i + CHUNK_SIZE));
+  const rowsByBrand = new Map<string, Record<string, unknown>[]>();
+  let total = 0;
+  for (const r of rows) {
+    const name = String(r[campaignSourceHeader] ?? "");
+    const brand = brandForCampaign.get(name);
+    if (!brand) continue;
+    const arr = rowsByBrand.get(brand) ?? [];
+    arr.push(r);
+    rowsByBrand.set(brand, arr);
+    total++;
   }
+
+  onProgress({ done: 0, total, stage: "데이터 업로드 중" });
   let done = 0;
-  for (let i = 0; i < batches.length; i += CHUNK_PARALLEL) {
-    const group = batches.slice(i, i + CHUNK_PARALLEL);
-    await Promise.all(
-      group.map(async (chunk) => {
-        const rowArrays = chunk.map((r) => begin.sourceHeaders.map((h) => r[h]));
-        await sendChunkToServer(begin, rowArrays);
-        done += chunk.length;
-        onProgress({ done, total: rows.length, stage: "데이터 업로드 중" });
-      }),
-    );
+  for (const [brandSlug, brandRows] of rowsByBrand) {
+    const begin = targets.get(brandSlug);
+    if (!begin) continue;
+    const batches: Record<string, unknown>[][] = [];
+    for (let i = 0; i < brandRows.length; i += CHUNK_SIZE) {
+      batches.push(brandRows.slice(i, i + CHUNK_SIZE));
+    }
+    for (let i = 0; i < batches.length; i += CHUNK_PARALLEL) {
+      const group = batches.slice(i, i + CHUNK_PARALLEL);
+      await Promise.all(
+        group.map(async (chunk) => {
+          const rowArrays = chunk.map((r) =>
+            begin.sourceHeaders.map((h) => r[h]),
+          );
+          await sendChunkToServer(begin, rowArrays);
+          done += chunk.length;
+          onProgress({ done, total, stage: `${brandSlug} 업로드 중` });
+        }),
+      );
+    }
   }
   return done;
 }
 
-/**
- * Streaming path for large CSVs. Reads the file line-by-line via Papa Parse
- * (which internally uses File.stream), buffers rows, and flushes CHUNK_SIZE-sized
- * batches to the server with at most CHUNK_PARALLEL requests in flight.
- *
- * Peak memory usage is bounded by the row buffer + inflight payloads,
- * so a 1.7 GB CSV stays well under 200 MB of JS heap.
- */
-async function commitStreaming(
+/** Streaming multi-brand commit. Per-brand row buffers flushed as they fill. */
+async function commitStreamingMultiBrand(
   file: File,
-  begin: BeginResponse,
+  targets: Map<string, BeginResponse>,
+  brandForCampaign: Map<string, string>,
   headerRowIdx: number,
   allHeaders: string[],
+  campaignSourceHeader: string,
   onProgress: (p: ProgressState) => void,
 ): Promise<number> {
   const PapaMod = await import("papaparse");
@@ -729,13 +895,18 @@ async function commitStreaming(
     ) => void;
   };
 
-  // CSV column index for each included source header. -1 indicates the column
-  // isn't present (shouldn't happen normally; we pass null in that case).
-  const csvIndexOf = begin.sourceHeaders.map((h) => allHeaders.indexOf(h));
-  // Rows to skip before the first data row: title rows + the header row itself.
-  const skipBeforeData = headerRowIdx + 1;
+  const campaignCsvIdx = allHeaders.indexOf(campaignSourceHeader);
+  // All targets share the same header plan (one CSV, same mapping) so we can
+  // pick any target's sourceHeaders to build the column index layout.
+  const firstTarget = targets.values().next().value as BeginResponse | undefined;
+  if (!firstTarget) throw new Error("no brand targets");
+  const csvIndexOf = firstTarget.sourceHeaders.map((h) =>
+    allHeaders.indexOf(h),
+  );
 
-  const rowBuf: unknown[][] = [];
+  const skipBeforeData = headerRowIdx + 1;
+  const bufByBrand = new Map<string, unknown[][]>();
+  for (const b of targets.keys()) bufByBrand.set(b, []);
   let seenRows = 0;
   let done = 0;
   let bytesCursor = 0;
@@ -747,9 +918,7 @@ async function commitStreaming(
 
   const reportProgress = () => {
     const pct =
-      totalBytes > 0
-        ? Math.min(100, Math.round((bytesCursor / totalBytes) * 100))
-        : 0;
+      totalBytes > 0 ? Math.min(100, Math.round((bytesCursor / totalBytes) * 100)) : 0;
     onProgress({
       done,
       total: 0,
@@ -758,22 +927,30 @@ async function commitStreaming(
   };
 
   const trySend = async () => {
-    while (!flushError && rowBuf.length >= CHUNK_SIZE_STREAMING) {
-      while (inflight.size >= CHUNK_PARALLEL_STREAMING && !flushError) {
-        await Promise.race([...inflight]);
+    while (!flushError) {
+      let flushed = false;
+      for (const [brandSlug, buf] of bufByBrand) {
+        while (buf.length >= CHUNK_SIZE_STREAMING) {
+          while (inflight.size >= CHUNK_PARALLEL_STREAMING && !flushError) {
+            await Promise.race([...inflight]);
+          }
+          if (flushError) break;
+          const chunk = buf.splice(0, CHUNK_SIZE_STREAMING);
+          const begin = targets.get(brandSlug)!;
+          const p = sendChunkToServer(begin, chunk)
+            .then(() => {
+              done += chunk.length;
+              reportProgress();
+            })
+            .catch((e) => {
+              flushError = e instanceof Error ? e : new Error(String(e));
+            })
+            .finally(() => inflight.delete(p));
+          inflight.add(p);
+          flushed = true;
+        }
       }
-      if (flushError) break;
-      const chunk = rowBuf.splice(0, CHUNK_SIZE_STREAMING);
-      const p = sendChunkToServer(begin, chunk)
-        .then(() => {
-          done += chunk.length;
-          reportProgress();
-        })
-        .catch((e) => {
-          flushError = e instanceof Error ? e : new Error(String(e));
-        })
-        .finally(() => inflight.delete(p));
-      inflight.add(p);
+      if (!flushed) break;
     }
   };
 
@@ -790,9 +967,13 @@ async function commitStreaming(
                 continue;
               }
               seenRows++;
-              rowBuf.push(
-                csvIndexOf.map((i) => (i >= 0 ? (row[i] ?? null) : null)),
-              );
+              const name =
+                campaignCsvIdx >= 0 ? String(row[campaignCsvIdx] ?? "") : "";
+              const brand = brandForCampaign.get(name);
+              if (!brand) continue;
+              const buf = bufByBrand.get(brand);
+              if (!buf) continue;
+              buf.push(csvIndexOf.map((i) => (i >= 0 ? (row[i] ?? null) : null)));
             }
             if (results.meta?.cursor != null) bytesCursor = results.meta.cursor;
             await trySend();
@@ -811,31 +992,90 @@ async function commitStreaming(
       complete: () => {
         (async () => {
           try {
-            // Wait for all inflight requests to finish.
             while (inflight.size > 0) {
               await Promise.race([...inflight]);
             }
-            if (flushError) {
-              reject(flushError);
-              return;
+            if (flushError) return reject(flushError);
+            for (const [brandSlug, buf] of bufByBrand) {
+              if (buf.length === 0) continue;
+              const begin = targets.get(brandSlug)!;
+              while (buf.length > 0 && !flushError) {
+                const chunk = buf.splice(0, CHUNK_SIZE_STREAMING);
+                await sendChunkToServer(begin, chunk);
+                done += chunk.length;
+                bytesCursor = totalBytes;
+                reportProgress();
+              }
             }
-            // Flush remaining rows in (possibly smaller) batches.
-            while (rowBuf.length > 0 && !flushError) {
-              const chunk = rowBuf.splice(0, CHUNK_SIZE_STREAMING);
-              await sendChunkToServer(begin, chunk);
-              done += chunk.length;
-              bytesCursor = totalBytes;
-              reportProgress();
-            }
-            if (flushError) {
-              reject(flushError);
-              return;
-            }
+            if (flushError) return reject(flushError);
             resolve(done);
           } catch (e) {
             reject(e instanceof Error ? e : new Error(String(e)));
           }
         })();
+      },
+      error: (err) => reject(err),
+    });
+  });
+}
+
+/** Stream the file counting distinct campaign_name → row counts. */
+async function scanCampaignsStreaming(
+  file: File,
+  headerRowIdx: number,
+  allHeaders: string[],
+  campaignSourceHeader: string,
+  onProgress: (bytesCursor: number, totalBytes: number) => void,
+): Promise<CampaignStat[]> {
+  const PapaMod = await import("papaparse");
+  type ParseResult = { data: string[][]; meta?: { cursor?: number } };
+  type Parser = { pause: () => void; resume: () => void; abort: () => void };
+  const Papa = (PapaMod.default ?? PapaMod) as {
+    parse: (
+      input: File,
+      config: {
+        skipEmptyLines?: boolean | "greedy";
+        chunk?: (r: ParseResult, p: Parser) => void;
+        complete?: () => void;
+        error?: (e: Error) => void;
+      },
+    ) => void;
+  };
+  const campaignIdx = allHeaders.indexOf(campaignSourceHeader);
+  if (campaignIdx < 0) throw new Error("campaign 컬럼을 파일에서 찾지 못했습니다.");
+  const skipBeforeData = headerRowIdx + 1;
+  const counts = new Map<string, number>();
+  let seen = 0;
+  const totalBytes = file.size;
+
+  return new Promise<CampaignStat[]>((resolve, reject) => {
+    Papa.parse(file, {
+      skipEmptyLines: "greedy",
+      chunk: (results) => {
+        for (const row of results.data) {
+          if (seen < skipBeforeData) {
+            seen++;
+            continue;
+          }
+          seen++;
+          const name = String(row[campaignIdx] ?? "");
+          if (!name) continue;
+          counts.set(name, (counts.get(name) ?? 0) + 1);
+        }
+        if (results.meta?.cursor != null) {
+          onProgress(results.meta.cursor, totalBytes);
+        }
+      },
+      complete: () => {
+        const stats: CampaignStat[] = Array.from(counts.entries()).map(
+          ([n, c]) => ({
+            campaign_name: n,
+            row_count: c,
+            auto_brand_slug: null,
+            auto_rule_pattern: null,
+          }),
+        );
+        resolve(stats);
       },
       error: (err) => reject(err),
     });

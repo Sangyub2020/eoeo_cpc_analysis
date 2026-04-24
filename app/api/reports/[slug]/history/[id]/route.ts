@@ -8,7 +8,7 @@ export async function PATCH(
   ctx: { params: Promise<{ slug: string; id: string }> },
 ) {
   const { id } = await ctx.params;
-  let body: { entry_date?: string; note?: string; screenshots?: string[] };
+  let body: { entry_date?: string; note?: string; screenshots?: string[]; campaign_name?: string | null };
   try {
     body = await req.json();
   } catch {
@@ -18,6 +18,10 @@ export async function PATCH(
   if (body.entry_date !== undefined) patch.entry_date = body.entry_date;
   if (body.note !== undefined) patch.note = body.note;
   if (body.screenshots !== undefined) patch.screenshots = body.screenshots;
+  if (body.campaign_name !== undefined) {
+    const v = typeof body.campaign_name === "string" ? body.campaign_name.trim() : null;
+    patch.campaign_name = v || null;
+  }
 
   const { data, error } = await getSupabaseAdmin()
     .from("report_history")

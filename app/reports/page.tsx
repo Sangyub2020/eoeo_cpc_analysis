@@ -2,7 +2,8 @@ import Link from "next/link";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { buildReportSummary, type SummaryColumn, type ReportSummary } from "@/lib/reports/summary";
 import ReportCard from "@/components/reports/ReportCard";
-import { Upload, FolderOpen } from "lucide-react";
+import BrandCard from "@/components/reports/BrandCard";
+import { Upload } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -114,59 +115,22 @@ export default async function ReportsListPage() {
           <div className="space-y-10">
             {brands.length > 0 && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {brands.map(([brand, members]) => {
-                  const totalRows = members.reduce(
-                    (s, m) => s + (m.summary?.rowCount ?? 0),
-                    0,
-                  );
-                  const lastUp = members
-                    .map((m) => m.summary?.lastUploadedAt)
-                    .filter((x): x is string => !!x)
-                    .sort()
-                    .at(-1);
-                  return (
-                    <Link
-                      key={brand}
-                      href={`/brands/${encodeURIComponent(brand)}`}
-                      className="p-6 rounded-xl border border-purple-500/30 bg-gradient-to-br from-slate-800/60 to-slate-900/60 backdrop-blur-xl shadow-lg shadow-purple-500/10 hover:border-cyan-500/50 hover:shadow-cyan-500/10 transition-all block group"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-center gap-2">
-                          <FolderOpen
-                            className="text-cyan-300 group-hover:text-cyan-200 transition-colors"
-                            size={22}
-                          />
-                          <span className="text-2xl font-bold text-gray-100">{brand}</span>
-                        </div>
-                        <span className="text-[10px] px-2 py-0.5 rounded bg-purple-500/20 text-purple-200 whitespace-nowrap">
-                          {members.length}개 레포트
-                        </span>
-                      </div>
-                      <div className="mt-4 space-y-1 text-xs text-gray-400">
-                        {members.map((m) => (
-                          <div key={m.slug} className="flex items-center gap-1.5">
-                            <span className="text-gray-600">•</span>
-                            <span className="truncate text-gray-300">{m.display_name}</span>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-4 flex items-center gap-3 text-xs text-gray-400 pt-3 border-t border-purple-500/10">
-                        <span>
-                          합계{" "}
-                          <span className="text-cyan-300 font-semibold tabular-nums">
-                            {totalRows.toLocaleString()}
-                          </span>
-                          행
-                        </span>
-                        {lastUp && (
-                          <span className="text-gray-500">
-                            · 최근 업로드 {lastUp.slice(0, 10)}
-                          </span>
-                        )}
-                      </div>
-                    </Link>
-                  );
-                })}
+                {brands.map(([brand, members]) => (
+                  <BrandCard
+                    key={brand}
+                    brand={brand}
+                    members={members.map((m) => ({
+                      slug: m.slug,
+                      display_name: m.display_name,
+                      summary: m.summary
+                        ? {
+                            rowCount: m.summary.rowCount,
+                            lastUploadedAt: m.summary.lastUploadedAt,
+                          }
+                        : null,
+                    }))}
+                  />
+                ))}
               </div>
             )}
 

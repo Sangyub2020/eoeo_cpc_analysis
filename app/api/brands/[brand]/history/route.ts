@@ -31,7 +31,7 @@ export async function POST(
   const brand = resolveBrand((await ctx.params).brand);
   if (!brand) return NextResponse.json({ error: "brand required" }, { status: 400 });
 
-  let body: { entry_date?: string; note?: string; screenshots?: string[] };
+  let body: { entry_date?: string; note?: string; screenshots?: string[]; campaign_name?: string | null };
   try {
     body = await req.json();
   } catch {
@@ -43,6 +43,7 @@ export async function POST(
     report_type_id: null,
     note: (body.note ?? "").trim(),
     screenshots: Array.isArray(body.screenshots) ? body.screenshots : [],
+    campaign_name: body.campaign_name?.trim() || null,
   };
   if (body.entry_date) payload.entry_date = body.entry_date;
 

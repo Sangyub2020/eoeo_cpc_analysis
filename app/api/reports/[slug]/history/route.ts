@@ -35,7 +35,7 @@ export async function POST(
   ctx: { params: Promise<{ slug: string }> },
 ) {
   const { slug } = await ctx.params;
-  let body: { entry_date?: string; note?: string; screenshots?: string[] };
+  let body: { entry_date?: string; note?: string; screenshots?: string[]; campaign_name?: string | null };
   try {
     body = await req.json();
   } catch {
@@ -48,6 +48,7 @@ export async function POST(
     report_type_id: typeId,
     note: (body.note ?? "").trim(),
     screenshots: Array.isArray(body.screenshots) ? body.screenshots : [],
+    campaign_name: body.campaign_name?.trim() || null,
   };
   if (body.entry_date) payload.entry_date = body.entry_date;
 
