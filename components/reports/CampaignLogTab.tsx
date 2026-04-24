@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Loader2,
   Plus,
@@ -12,6 +13,7 @@ import {
   Search,
   ChevronDown,
   ChevronRight,
+  ChevronLeft,
   FileText,
 } from "lucide-react";
 
@@ -378,6 +380,9 @@ function EntryCard({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  // Open index into entry.screenshots when a thumbnail is clicked. Null closes.
+  const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
+
   return (
     <div className="p-3 rounded-md border border-purple-500/20 bg-slate-900/40 space-y-2">
       <div className="flex items-start justify-between gap-2">
@@ -406,19 +411,160 @@ function EntryCard({
       </div>
       {entry.screenshots && entry.screenshots.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {entry.screenshots.map((url) => (
-            // eslint-disable-next-line @next/next/no-img-element
-            <a key={url} href={url} target="_blank" rel="noopener noreferrer">
+          {entry.screenshots.map((url, i) => (
+            <button
+              key={url}
+              type="button"
+              onClick={() => setLightboxIdx(i)}
+              className="block p-0 border-0 bg-transparent cursor-zoom-in"
+              title="클릭해서 크게 보기"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={url}
                 alt="screenshot"
                 className="h-28 w-auto rounded-md border border-purple-500/20 object-cover hover:border-cyan-500/50 transition-colors"
               />
-            </a>
+            </button>
           ))}
         </div>
       )}
+      {lightboxIdx != null && (
+        <ScreenshotLightbox
+          images={entry.screenshots}
+          index={lightboxIdx}
+          onChange={setLightboxIdx}
+          onClose={() => setLightboxIdx(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * Fullscreen screenshot viewer. Renders a portal on the body, blocks body
+ * scroll while open, and supports Esc to close + arrow keys / on-screen
+ * buttons to navigate within the same entry's screenshot list.
+ */
+function ScreenshotLightbox({
+  images,
+  index,
+  onChange,
+  onClose,
+}: {
+  images: string[];
+  index: number;
+  onChange: (next: number) => void;
+  onClose: () => void;
+}) {
+  const go = useCallback(
+    (delta: number) => {
+      const n = images.length;
+      if (n === 0) return;
+      // Wrap so you can cycle — useful when an entry has many screenshots.
+      onChange(((index + delta) % n + n) % n);
+    },
+    [images.length, index, onChange],
+  );
+
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const h = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft") go(-1);
+      else if (e.key === "ArrowRight") go(1);
+    };
+    window.addEventListener("keydown", h);
+    return () => {
+      window.removeEventListener("keydown", h);
+      document.body.style.overflow = prev;
+    };
+  }, [go, onClose]);
+
+  if (typeof document === "undefined") return null;
+  const url = images[index];
+  const canNav = images.length > 1;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center">
+      <div
+        onClick={onClose}
+        className="absolute inset-0 bg-slate-950/85 backdrop-blur-sm"
+      />
+      <div className="relative max-w-[92vw] max-h-[92vh] flex flex-col items-center gap-3">
+        <div className="flex items-center justify-between w-full px-1 text-xs text-gray-300">
+          <span className="tabular-nums">
+            {index + 1} / {images.length}
+          </span>
+          <button
+            onClick={onClose}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-gray-300 hover:text-rose-300 hover:bg-white/10"
+            title="닫기 (Esc)"
+          >
+            <X size={14} /> 닫기
+          </button>
+        </div>
+        <div className="relative flex items-center">
+          {canNav && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                go(-1);
+              }}
+              className="absolute -left-12 p-2 rounded-full bg-slate-900/70 border border-purple-500/30 text-gray-200 hover:bg-cyan-500/20 hover:text-cyan-200"
+              title="이전 (←)"
+            >
+              <ChevronLeft size={20} />
+            </button>
+          )}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={url}
+            alt="screenshot"
+            className="max-w-[88vw] max-h-[80vh] object-contain rounded-md border border-purple-500/20 shadow-2xl shadow-cyan-500/10"
+          />
+          {canNav && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                go(1);
+              }}
+              className="absolute -right-12 p-2 rounded-full bg-slate-900/70 border border-purple-500/30 text-gray-200 hover:bg-cyan-500/20 hover:text-cyan-200"
+              title="다음 (→)"
+            >
+              <ChevronRight size={20} />
+            </button>
+          )}
+        </div>
+        {canNav && (
+          <div className="flex gap-1.5 max-w-[88vw] overflow-x-auto py-1">
+            {images.map((u, i) => (
+              <button
+                key={u}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onChange(i);
+                }}
+                className={`shrink-0 h-12 w-auto rounded border transition-colors ${
+                  i === index
+                    ? "border-cyan-400 ring-2 ring-cyan-500/40"
+                    : "border-purple-500/20 opacity-60 hover:opacity-100"
+                }`}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={u}
+                  alt=""
+                  className="h-full w-auto object-cover rounded-[3px]"
+                />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>,
+    document.body,
   );
 }
 

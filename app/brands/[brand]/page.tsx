@@ -11,6 +11,7 @@ import DrillDownModal from "@/components/reports/DrillDownModal";
 import CampaignLogTab from "@/components/reports/CampaignLogTab";
 import NicknamesTab from "@/components/reports/NicknamesTab";
 import ViewsBar from "@/components/reports/ViewsBar";
+import DateRangeSlider from "@/components/reports/DateRangeSlider";
 import { emptyFilter, type FilterState } from "@/lib/reports/filter";
 import type { ReportColumn, ReportType } from "@/lib/reports/types";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 
-type TypeInfo = { type: ReportType; columns: ReportColumn[] };
+type TypeInfo = {
+  type: ReportType;
+  columns: ReportColumn[];
+  dateRange?: { min: string | null; max: string | null };
+};
 
 interface BrandViewConfig {
   tab: "dashboard" | "history" | "nicknames";
@@ -127,6 +132,20 @@ export default function BrandDetailPage() {
     setTargetFilter((f) => ({ ...f, [kind === "from" ? "dateFrom" : "dateTo"]: val }));
   }
 
+  /** Earliest/latest date across all report types under this brand. Used as
+   *  the bounds for the date-range slider so the handles can only slide
+   *  within dates the data actually covers. */
+  const brandDateBounds = useMemo((): { min: string; max: string } | null => {
+    let min: string | null = null;
+    let max: string | null = null;
+    for (const t of types) {
+      const r = t.dateRange;
+      if (r?.min && (min === null || r.min < min)) min = r.min;
+      if (r?.max && (max === null || r.max > max)) max = r.max;
+    }
+    return min && max ? { min, max } : null;
+  }, [types]);
+
   /** Dimension columns that exist in BOTH tables — these should stay synced
    *  when the top ChartBuilder edits the primary filter, so the Target value
    *  section respects the campaign selection made up there. */
@@ -176,10 +195,13 @@ export default function BrandDetailPage() {
   >([]);
   const [sharedHiddenTerms, setSharedHiddenTerms] = useState<Set<string>>(new Set());
   const [sharedTermsLoading, setSharedTermsLoading] = useState(false);
-  /** Once the user (or a restored view) has touched the hidden set we stop
-   *  auto-defaulting to "only top-1 visible" on every refetch — otherwise
-   *  changing filters would silently trample the selection. */
-  const hiddenTermsTouchedRef = useRef(false);
+  /** The searchTermFilterKey that the current hidden set is "valid for".
+   *  When the filter changes (e.g. a new campaign is selected) this ref
+   *  no longer matches, so the next distinct fetch resets hidden back to
+   *  "only top-1 visible" — giving each campaign selection its own default.
+   *  User checkbox toggles + Recent-view restores update this ref so
+   *  manual selections survive topN refetches on the same filter state. */
+  const hiddenTermsOwnedKeyRef = useRef<string | null>(null);
 
   // Target-value chart: shared topN / hidden state
   const [targetValuesTopN, setTargetValuesTopN] = useState(50);
@@ -190,18 +212,7 @@ export default function BrandDetailPage() {
     new Set(),
   );
   const [sharedTargetValuesLoading, setSharedTargetValuesLoading] = useState(false);
-  const hiddenTargetsTouchedRef = useRef(false);
-
-  // User/restore-aware setters: child components and loadView call these so
-  // the "touched" flag tracks reality without leaking across unrelated state.
-  function setHiddenTermsTouched(next: Set<string>) {
-    hiddenTermsTouchedRef.current = true;
-    setSharedHiddenTerms(next);
-  }
-  function setHiddenTargetsTouched(next: Set<string>) {
-    hiddenTargetsTouchedRef.current = true;
-    setSharedHiddenTargetValues(next);
-  }
+  const hiddenTargetsOwnedKeyRef = useRef<string | null>(null);
 
   // Stable key so the distinct fetch only reruns on the pieces of the filter
   // that actually affect the list (date range; everything except search_term).
@@ -226,6 +237,19 @@ export default function BrandDetailPage() {
       dimensions: dims,
     });
   }, [targetFilter]);
+
+  // Setters that mark the current hidden set as "owned" by the current filter
+  // key, so subsequent topN refetches don't trample the user's selection but
+  // a filter change does force a default-top-1 reset. Pass these to children
+  // instead of the raw setters.
+  function setHiddenTermsOwned(next: Set<string>) {
+    hiddenTermsOwnedKeyRef.current = searchTermFilterKey;
+    setSharedHiddenTerms(next);
+  }
+  function setHiddenTargetsOwned(next: Set<string>) {
+    hiddenTargetsOwnedKeyRef.current = targetValueFilterKey;
+    setSharedHiddenTargetValues(next);
+  }
 
   useEffect(() => {
     if (!searchType) return;
@@ -261,8 +285,12 @@ export default function BrandDetailPage() {
             };
           });
         setSharedSearchTerms(terms);
-        if (!hiddenTermsTouchedRef.current) {
+        // Only default to "top-1 visible" when the hidden set was never
+        // owned against the current filter state (fresh load, or filter
+        // just changed — e.g. user picked a different campaign).
+        if (hiddenTermsOwnedKeyRef.current !== searchTermFilterKey) {
           setSharedHiddenTerms(new Set(terms.slice(1).map((t) => t.value)));
+          hiddenTermsOwnedKeyRef.current = null;
         }
       })
       .catch((e) => {
@@ -307,8 +335,9 @@ export default function BrandDetailPage() {
             };
           });
         setSharedTargetValues(vals);
-        if (!hiddenTargetsTouchedRef.current) {
+        if (hiddenTargetsOwnedKeyRef.current !== targetValueFilterKey) {
           setSharedHiddenTargetValues(new Set(vals.slice(1).map((v) => v.value)));
+          hiddenTargetsOwnedKeyRef.current = null;
         }
       })
       .catch((e) => {
@@ -351,12 +380,33 @@ export default function BrandDetailPage() {
     if (c.targetFilter) setTargetFilter(c.targetFilter);
     if (typeof c.searchTermsTopN === "number") setSearchTermsTopN(c.searchTermsTopN);
     if (Array.isArray(c.sharedHiddenTerms)) {
-      hiddenTermsTouchedRef.current = true;
+      // Tag the hidden set as "owned" by the filter key it was saved against
+      // so the subsequent distinct-fetch triggered by the filter change sees
+      // a matching key and keeps the restored selection.
+      if (c.searchFilter) {
+        const dims = { ...(c.searchFilter.dimensions ?? {}) };
+        delete dims["search_term"];
+        hiddenTermsOwnedKeyRef.current = JSON.stringify({
+          dateColumn: c.searchFilter.dateColumn,
+          dateFrom: c.searchFilter.dateFrom,
+          dateTo: c.searchFilter.dateTo,
+          dimensions: dims,
+        });
+      }
       setSharedHiddenTerms(new Set(c.sharedHiddenTerms));
     }
     if (typeof c.targetValuesTopN === "number") setTargetValuesTopN(c.targetValuesTopN);
     if (Array.isArray(c.sharedHiddenTargetValues)) {
-      hiddenTargetsTouchedRef.current = true;
+      if (c.targetFilter) {
+        const dims = { ...(c.targetFilter.dimensions ?? {}) };
+        delete dims["target_value"];
+        hiddenTargetsOwnedKeyRef.current = JSON.stringify({
+          dateColumn: c.targetFilter.dateColumn,
+          dateFrom: c.targetFilter.dateFrom,
+          dateTo: c.targetFilter.dateTo,
+          dimensions: dims,
+        });
+      }
       setSharedHiddenTargetValues(new Set(c.sharedHiddenTargetValues));
     }
     if (c.chart) {
@@ -499,38 +549,57 @@ export default function BrandDetailPage() {
         <TabsContent value="dashboard" className="space-y-4">
           {/* Shared date range — only date is synced; dimension filters stay
               per-type because column sets differ between the two tables.
-              Lives inside the dashboard tab because the other tabs (수정일지,
-              닉네임) don't use date or saved views. */}
-          <div className="space-y-2">
-            <div className="px-3 py-2 rounded-lg border border-purple-500/20 bg-slate-800/40 backdrop-blur-xl flex flex-wrap items-center gap-3 text-sm">
-              <span className="text-xs font-medium text-gray-300">공통 기간</span>
-              <label className="inline-flex items-center gap-1 text-xs text-gray-400">
+              Sticky to the top of the viewport (below the global app header)
+              so the date window stays visible while scrolling through long
+              charts. `top-14` matches the app header height. */}
+          <div className="sticky top-14 z-20 -mx-2 px-2 bg-slate-900/80 backdrop-blur-xl py-2 rounded-b-lg shadow-md shadow-slate-950/40">
+            <div className="px-3 py-2 rounded-lg border border-purple-500/20 bg-slate-800/60 backdrop-blur-xl flex flex-wrap items-center gap-3 text-sm">
+              <span className="text-xs font-medium text-gray-300 shrink-0">공통 기간</span>
+              <label className="inline-flex items-center gap-1 text-xs text-gray-400 shrink-0">
                 <input
                   type="date"
+                  min={brandDateBounds?.min ?? undefined}
+                  max={brandDateBounds?.max ?? undefined}
                   value={searchFilter.dateFrom ?? targetFilter.dateFrom ?? ""}
                   onChange={(e) => setSharedDate("from", e.target.value || null)}
-                  className="rounded border border-purple-500/30 bg-slate-900 px-2 py-1 text-xs text-gray-200 focus:border-cyan-500 focus:outline-none"
+                  className="rounded border border-purple-500/30 bg-slate-900 px-2 py-1 text-xs text-gray-200 focus:border-cyan-500 focus:outline-none [color-scheme:dark]"
                 />
                 <span>~</span>
                 <input
                   type="date"
+                  min={brandDateBounds?.min ?? undefined}
+                  max={brandDateBounds?.max ?? undefined}
                   value={searchFilter.dateTo ?? targetFilter.dateTo ?? ""}
                   onChange={(e) => setSharedDate("to", e.target.value || null)}
-                  className="rounded border border-purple-500/30 bg-slate-900 px-2 py-1 text-xs text-gray-200 focus:border-cyan-500 focus:outline-none"
+                  className="rounded border border-purple-500/30 bg-slate-900 px-2 py-1 text-xs text-gray-200 focus:border-cyan-500 focus:outline-none [color-scheme:dark]"
                 />
               </label>
+              {brandDateBounds && (
+                <div className="flex-1 min-w-[240px] max-w-[720px]">
+                  <DateRangeSlider
+                    minDate={brandDateBounds.min}
+                    maxDate={brandDateBounds.max}
+                    fromDate={searchFilter.dateFrom ?? targetFilter.dateFrom ?? null}
+                    toDate={searchFilter.dateTo ?? targetFilter.dateTo ?? null}
+                    onChange={(from, to) => {
+                      setSharedDate("from", from);
+                      setSharedDate("to", to);
+                    }}
+                  />
+                </div>
+              )}
               {(sharedTermsLoading || sharedTargetValuesLoading) && (
-                <Loader2 size={12} className="animate-spin text-cyan-400" />
+                <Loader2 size={12} className="animate-spin text-cyan-400 shrink-0" />
               )}
             </div>
-
-            <ViewsBar
-              baseUrl={`/api/brands/${encodeURIComponent(brand)}`}
-              activeViewId={activeViewId}
-              currentConfig={currentViewConfig}
-              onLoad={loadView}
-            />
           </div>
+
+          <ViewsBar
+            baseUrl={`/api/brands/${encodeURIComponent(brand)}`}
+            activeViewId={activeViewId}
+            currentConfig={currentViewConfig}
+            onLoad={loadView}
+          />
 
           {/* One ChartBuilder at the top — it drives kind/X/Y/group for the
               brand. Uses the search-term table as its source (finer grain, has
@@ -579,7 +648,7 @@ export default function BrandDetailPage() {
                 setTopN={setSearchTermsTopN}
                 sharedTerms={sharedSearchTerms}
                 hidden={sharedHiddenTerms}
-                setHidden={setHiddenTermsTouched}
+                setHidden={setHiddenTermsOwned}
                 termsLoading={sharedTermsLoading}
                 stackColumn="search_term"
                 onDrill={(v) =>
@@ -598,7 +667,7 @@ export default function BrandDetailPage() {
                 setTopN={setSearchTermsTopN}
                 sharedTerms={sharedSearchTerms}
                 hidden={sharedHiddenTerms}
-                setHidden={setHiddenTermsTouched}
+                setHidden={setHiddenTermsOwned}
                 termsLoading={sharedTermsLoading}
                 onDrill={(v) =>
                   setDrillState({
@@ -639,7 +708,7 @@ export default function BrandDetailPage() {
                 setTopN={setTargetValuesTopN}
                 sharedTerms={sharedTargetValues}
                 hidden={sharedHiddenTargetValues}
-                setHidden={setHiddenTargetsTouched}
+                setHidden={setHiddenTargetsOwned}
                 termsLoading={sharedTargetValuesLoading}
                 stackColumn="target_value"
                 onDrill={(v) =>
@@ -658,7 +727,7 @@ export default function BrandDetailPage() {
                 setTopN={setTargetValuesTopN}
                 sharedTerms={sharedTargetValues}
                 hidden={sharedHiddenTargetValues}
-                setHidden={setHiddenTargetsTouched}
+                setHidden={setHiddenTargetsOwned}
                 termsLoading={sharedTargetValuesLoading}
                 stackColumn="target_value"
                 onDrill={(v) =>
