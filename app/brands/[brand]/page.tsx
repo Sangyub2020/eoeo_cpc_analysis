@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, Loader2, FolderOpen, BarChart3, History, Tag } from "lucide-react";
@@ -176,6 +176,10 @@ export default function BrandDetailPage() {
   >([]);
   const [sharedHiddenTerms, setSharedHiddenTerms] = useState<Set<string>>(new Set());
   const [sharedTermsLoading, setSharedTermsLoading] = useState(false);
+  /** Once the user (or a restored view) has touched the hidden set we stop
+   *  auto-defaulting to "only top-1 visible" on every refetch — otherwise
+   *  changing filters would silently trample the selection. */
+  const hiddenTermsTouchedRef = useRef(false);
 
   // Target-value chart: shared topN / hidden state
   const [targetValuesTopN, setTargetValuesTopN] = useState(50);
@@ -186,6 +190,18 @@ export default function BrandDetailPage() {
     new Set(),
   );
   const [sharedTargetValuesLoading, setSharedTargetValuesLoading] = useState(false);
+  const hiddenTargetsTouchedRef = useRef(false);
+
+  // User/restore-aware setters: child components and loadView call these so
+  // the "touched" flag tracks reality without leaking across unrelated state.
+  function setHiddenTermsTouched(next: Set<string>) {
+    hiddenTermsTouchedRef.current = true;
+    setSharedHiddenTerms(next);
+  }
+  function setHiddenTargetsTouched(next: Set<string>) {
+    hiddenTargetsTouchedRef.current = true;
+    setSharedHiddenTargetValues(next);
+  }
 
   // Stable key so the distinct fetch only reruns on the pieces of the filter
   // that actually affect the list (date range; everything except search_term).
@@ -245,7 +261,9 @@ export default function BrandDetailPage() {
             };
           });
         setSharedSearchTerms(terms);
-        setSharedHiddenTerms(new Set(terms.slice(1).map((t) => t.value)));
+        if (!hiddenTermsTouchedRef.current) {
+          setSharedHiddenTerms(new Set(terms.slice(1).map((t) => t.value)));
+        }
       })
       .catch((e) => {
         if ((e as Error).name === "AbortError") return;
@@ -289,7 +307,9 @@ export default function BrandDetailPage() {
             };
           });
         setSharedTargetValues(vals);
-        setSharedHiddenTargetValues(new Set(vals.slice(1).map((v) => v.value)));
+        if (!hiddenTargetsTouchedRef.current) {
+          setSharedHiddenTargetValues(new Set(vals.slice(1).map((v) => v.value)));
+        }
       })
       .catch((e) => {
         if ((e as Error).name === "AbortError") return;
@@ -330,15 +350,76 @@ export default function BrandDetailPage() {
     if (c.searchFilter) setSearchFilter(c.searchFilter);
     if (c.targetFilter) setTargetFilter(c.targetFilter);
     if (typeof c.searchTermsTopN === "number") setSearchTermsTopN(c.searchTermsTopN);
-    if (Array.isArray(c.sharedHiddenTerms)) setSharedHiddenTerms(new Set(c.sharedHiddenTerms));
+    if (Array.isArray(c.sharedHiddenTerms)) {
+      hiddenTermsTouchedRef.current = true;
+      setSharedHiddenTerms(new Set(c.sharedHiddenTerms));
+    }
     if (typeof c.targetValuesTopN === "number") setTargetValuesTopN(c.targetValuesTopN);
-    if (Array.isArray(c.sharedHiddenTargetValues))
+    if (Array.isArray(c.sharedHiddenTargetValues)) {
+      hiddenTargetsTouchedRef.current = true;
       setSharedHiddenTargetValues(new Set(c.sharedHiddenTargetValues));
+    }
     if (c.chart) {
       setChartInitial(c.chart);
       setChartKey((k) => k + 1);
     }
   }
+
+  // --- Recent view: auto-restore on mount (after types load) + auto-save on unload.
+  const RECENT_VIEW_NAME = "Recent";
+  const recentRestoredRef = useRef(false);
+  const currentConfigRef = useRef<BrandViewConfig | null>(null);
+  useEffect(() => {
+    currentConfigRef.current = currentViewConfig;
+  }, [currentViewConfig]);
+
+  useEffect(() => {
+    if (recentRestoredRef.current) return;
+    if (types.length === 0) return; // wait until brand types are loaded
+    recentRestoredRef.current = true;
+    const abort = new AbortController();
+    fetch(`/api/brands/${encodeURIComponent(brand)}/views`, {
+      signal: abort.signal,
+    })
+      .then((r) => r.json())
+      .then((j) => {
+        const recent = ((j.views ?? []) as { id: string; name: string; config: BrandViewConfig }[])
+          .find((v) => v.name === RECENT_VIEW_NAME);
+        if (recent) loadView(recent);
+      })
+      .catch(() => {});
+    return () => abort.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [types, brand]);
+
+  // Save-on-leave: fires for intra-app nav (effect cleanup) and real tab
+  // unload (pagehide). Uses sendBeacon for unload because fetch() is not
+  // guaranteed to complete once the page is tearing down.
+  useEffect(() => {
+    const url = `/api/brands/${encodeURIComponent(brand)}/views/recent`;
+    const save = (useBeacon: boolean) => {
+      const cfg = currentConfigRef.current;
+      if (!cfg) return;
+      const payload = JSON.stringify({ config: cfg });
+      if (useBeacon && typeof navigator !== "undefined" && navigator.sendBeacon) {
+        const blob = new Blob([payload], { type: "application/json" });
+        navigator.sendBeacon(url, blob);
+      } else {
+        fetch(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: payload,
+          keepalive: true,
+        }).catch(() => {});
+      }
+    };
+    const onPageHide = () => save(true);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      save(false);
+    };
+  }, [brand]);
 
   if (loading) {
     return (
@@ -498,7 +579,7 @@ export default function BrandDetailPage() {
                 setTopN={setSearchTermsTopN}
                 sharedTerms={sharedSearchTerms}
                 hidden={sharedHiddenTerms}
-                setHidden={setSharedHiddenTerms}
+                setHidden={setHiddenTermsTouched}
                 termsLoading={sharedTermsLoading}
                 stackColumn="search_term"
                 onDrill={(v) =>
@@ -517,7 +598,7 @@ export default function BrandDetailPage() {
                 setTopN={setSearchTermsTopN}
                 sharedTerms={sharedSearchTerms}
                 hidden={sharedHiddenTerms}
-                setHidden={setSharedHiddenTerms}
+                setHidden={setHiddenTermsTouched}
                 termsLoading={sharedTermsLoading}
                 onDrill={(v) =>
                   setDrillState({
@@ -558,7 +639,7 @@ export default function BrandDetailPage() {
                 setTopN={setTargetValuesTopN}
                 sharedTerms={sharedTargetValues}
                 hidden={sharedHiddenTargetValues}
-                setHidden={setSharedHiddenTargetValues}
+                setHidden={setHiddenTargetsTouched}
                 termsLoading={sharedTargetValuesLoading}
                 stackColumn="target_value"
                 onDrill={(v) =>
@@ -577,7 +658,7 @@ export default function BrandDetailPage() {
                 setTopN={setTargetValuesTopN}
                 sharedTerms={sharedTargetValues}
                 hidden={sharedHiddenTargetValues}
-                setHidden={setSharedHiddenTargetValues}
+                setHidden={setHiddenTargetsTouched}
                 termsLoading={sharedTargetValuesLoading}
                 stackColumn="target_value"
                 onDrill={(v) =>

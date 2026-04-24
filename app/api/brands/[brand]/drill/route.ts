@@ -101,20 +101,33 @@ export async function POST(
     const filterClause =
       `${extraWhere ? `${extraWhere} and` : "where"} ${q(filterBy)} = ${sqlLit(value)}`;
 
+    // Include target_match_type in the grouping so rows split by (value,
+    // match_type). A single target_value can carry multiple match_types
+    // (BROAD / PHRASE / EXACT / TARGETING_EXPRESSION) and the breakdown
+    // is more useful when each is shown as its own row.
+    const hasMatchType = allowed.has("target_match_type");
+    const groupCols = hasMatchType
+      ? `${q(groupBy)}, ${q("target_match_type")}`
+      : q(groupBy);
+    const selectCols = hasMatchType
+      ? `${q(groupBy)} as v, ${q("target_match_type")} as mt`
+      : `${q(groupBy)} as v, null::text as mt`;
+
     const sql =
-      `select ${q(groupBy)} as v, ` +
+      `select ${selectCols}, ` +
       `coalesce(sum(impressions),0)::bigint as impressions, ` +
       `coalesce(sum(clicks),0)::bigint as clicks, ` +
       `coalesce(sum(total_cost),0)::numeric as cost, ` +
       `coalesce(sum(sales),0)::numeric as sales ` +
       `from public.${q(rtype.table_name)} ` +
       `${filterClause} ` +
-      `group by ${q(groupBy)} ` +
+      `group by ${groupCols} ` +
       `order by sales desc nulls last, cost desc nulls last ` +
       `limit ${limit}`;
 
     const rows = await execQueryLong<{
       v: string | null;
+      mt: string | null;
       impressions: number | null;
       clicks: number | null;
       cost: number | null;
@@ -124,6 +137,7 @@ export async function POST(
     return NextResponse.json({
       rows: rows.map((r) => ({
         value: r.v,
+        match_type: r.mt,
         impressions: Number(r.impressions ?? 0),
         clicks: Number(r.clicks ?? 0),
         cost: Number(r.cost ?? 0),

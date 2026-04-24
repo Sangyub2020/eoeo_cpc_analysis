@@ -7,6 +7,7 @@ import type { FilterState } from "@/lib/reports/filter";
 
 interface DrillRow {
   value: string | null;
+  match_type: string | null;
   impressions: number;
   clicks: number;
   cost: number;
@@ -182,6 +183,7 @@ export default function DrillDownModal({
               <thead className="sticky top-0 bg-slate-900 z-10">
                 <tr className="text-left text-gray-500 uppercase tracking-wide text-[10px] border-b border-purple-500/20">
                   <th className="py-2 pr-2">{groupLabel}</th>
+                  <th className="py-2 pr-2">Match type</th>
                   <ThSort label="Impressions" myKey="impressions" activeKey={sortKey} dir={sortDir} onClick={handleSort} />
                   <ThSort label="Clicks" myKey="clicks" activeKey={sortKey} dir={sortDir} onClick={handleSort} />
                   <ThSort label="Cost" myKey="cost" activeKey={sortKey} dir={sortDir} onClick={handleSort} />
@@ -192,11 +194,14 @@ export default function DrillDownModal({
               <tbody>
                 {sorted.map((r, i) => (
                   <tr
-                    key={(r.value ?? "_null") + "_" + i}
+                    key={(r.value ?? "_null") + "_" + (r.match_type ?? "_mt") + "_" + i}
                     className="border-b border-purple-500/10 hover:bg-white/5"
                   >
                     <td className="py-1.5 pr-2 text-gray-200 font-mono text-[11px] max-w-[320px] truncate" title={r.value ?? ""}>
                       {r.value ?? <span className="italic text-gray-500">(null)</span>}
+                    </td>
+                    <td className="py-1.5 pr-2">
+                      <MatchTypeBadge value={r.match_type} />
                     </td>
                     <td className="py-1.5 text-right text-gray-400 tabular-nums">
                       {r.impressions.toLocaleString()}
@@ -226,7 +231,7 @@ export default function DrillDownModal({
               </tbody>
               <tfoot className="sticky bottom-0 bg-slate-900">
                 <tr className="border-t border-purple-500/30 font-semibold text-gray-200">
-                  <td className="py-2 pr-2 text-[11px] uppercase tracking-wide text-gray-400">
+                  <td className="py-2 pr-2 text-[11px] uppercase tracking-wide text-gray-400" colSpan={2}>
                     합계 ({rows.length}개)
                   </td>
                   <td className="py-2 text-right tabular-nums">
@@ -297,6 +302,28 @@ function ThSort({
         )}
       </button>
     </th>
+  );
+}
+
+function MatchTypeBadge({ value }: { value: string | null }) {
+  if (!value) return <span className="text-gray-500 italic">—</span>;
+  const v = value.toUpperCase();
+  // Amazon's match types map to a small palette so the eye can tell them
+  // apart at a glance. Anything unrecognized falls back to neutral gray.
+  const styles: Record<string, string> = {
+    EXACT: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+    PHRASE: "bg-cyan-500/15 text-cyan-300 border-cyan-500/30",
+    BROAD: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+    TARGETING_EXPRESSION: "bg-purple-500/15 text-purple-300 border-purple-500/30",
+  };
+  const cls = styles[v] ?? "bg-slate-500/15 text-gray-300 border-slate-500/30";
+  return (
+    <span
+      className={`inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium uppercase tracking-wide ${cls}`}
+      title={value}
+    >
+      {value}
+    </span>
   );
 }
 
