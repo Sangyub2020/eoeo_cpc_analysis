@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
-import { execSQL } from "@/lib/db/exec";
+import { execQuery, execSQL } from "@/lib/db/exec";
 import {
   buildAddColumnSQL,
   buildCreateTableSQL,
   assertIdent,
+  q,
 } from "@/lib/reports/sql";
 import type { DataType, HeaderPlan } from "@/lib/reports/types";
 
@@ -196,6 +197,26 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: upErr?.message ?? "upload record failed" }, { status: 500 });
   }
 
+  // Probe the latest date already in the destination table so the client can
+  // (optionally) skip rows it already has — used by the "이어서 업로드"
+  // continuation flow on the brand page. Cheap query (min/max with no scan).
+  let latestDate: string | null = null;
+  if (!isNewType) {
+    try {
+      const dateColEntry = activePlan.find(
+        (h) => h.data_type === "date" || h.data_type === "timestamp",
+      );
+      if (dateColEntry) {
+        const rows = await execQuery<{ d: string | null }>(
+          `select max(${q(dateColEntry.column_name)})::text as d from public.${q(tableName)}`,
+        );
+        latestDate = rows[0]?.d ? rows[0].d.slice(0, 10) : null;
+      }
+    } catch {
+      // non-critical — fall through with null
+    }
+  }
+
   return NextResponse.json({
     upload_id: upload.id,
     report_type_id: reportTypeId,
@@ -206,5 +227,6 @@ export async function POST(req: Request) {
     dataTypes: activePlan.map((h) => h.data_type),
     keyColumns,
     expectedRowCount,
+    latestDate,
   });
 }

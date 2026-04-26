@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   Loader2,
@@ -62,6 +62,10 @@ interface BeginResponse {
   sourceHeaders: string[];
   dataTypes: DataType[];
   keyColumns: string[];
+  /** Max date already present in the destination table. Null for new types
+   *  or tables without a date column. The continuation flow uses this to
+   *  skip rows the table already has. */
+  latestDate?: string | null;
 }
 
 interface CampaignStat {
@@ -73,6 +77,12 @@ interface CampaignStat {
 
 export default function UploadPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  /** When `?continue=1` is in the URL, the upload skips rows whose date is
+   *  on or before the destination table's existing max date — for the brand
+   *  detail page's "이어서 업로드" entry point. */
+  const continueMode = searchParams?.get("continue") === "1";
+  const continueBrand = searchParams?.get("brand") ?? null;
   const [step, setStep] = useState<Step>("pick");
   const [file, setFile] = useState<File | null>(null);
   const [headers, setHeaders] = useState<string[]>([]);
@@ -422,6 +432,16 @@ export default function UploadPage() {
       brandTargets.set(brandSlug, (await beginRes.json()) as BeginResponse);
     }
 
+    // For continuation mode, locate the date column's source header so we
+    // can drop rows whose date is on/before each brand's existing max.
+    const dateEntry = plan.find(
+      (h) =>
+        h.include &&
+        (h.data_type === "date" || h.data_type === "timestamp"),
+    );
+    const continueDateSourceHeader =
+      continueMode && dateEntry ? dateEntry.source_header : null;
+
     let totalDone = 0;
     try {
       if (largeCsvMode) {
@@ -432,6 +452,7 @@ export default function UploadPage() {
           headerRowIdx,
           headers,
           campaignSourceHeader!,
+          continueDateSourceHeader,
           (p) => setProgress(p),
         );
       } else {
@@ -440,6 +461,7 @@ export default function UploadPage() {
           brandTargets,
           brandForCampaign,
           campaignSourceHeader!,
+          continueDateSourceHeader,
           (p) => setProgress(p),
         );
       }
@@ -542,6 +564,21 @@ export default function UploadPage() {
         <div className="flex items-start gap-2 p-3 rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-300 text-sm">
           <AlertCircle size={18} />
           <span>{error}</span>
+        </div>
+      )}
+
+      {continueMode && (
+        <div className="flex items-start gap-2 p-3 rounded-lg border border-cyan-500/30 bg-cyan-500/10 text-cyan-200 text-sm">
+          <span className="font-semibold whitespace-nowrap">이어서 업로드 모드</span>
+          <span className="text-gray-300">
+            {continueBrand && (
+              <>
+                <span className="text-cyan-300">{continueBrand}</span>{" "}
+              </>
+            )}
+            대상 테이블의 마지막 데이터 이후 행만 추가됩니다. 그 이전(또는 같은
+            날짜) 행은 자동으로 건너뜁니다.
+          </span>
         </div>
       )}
 
@@ -830,18 +867,42 @@ async function commitInMemoryMultiBrand(
   targets: Map<string, BeginResponse>,
   brandForCampaign: Map<string, string>,
   campaignSourceHeader: string,
+  /** When non-null + the brand's begin response carries a latestDate,
+   *  rows with date <= that date are skipped (continuation mode). */
+  continueDateSourceHeader: string | null,
   onProgress: (p: ProgressState) => void,
 ): Promise<number> {
   const rowsByBrand = new Map<string, Record<string, unknown>[]>();
   let total = 0;
+  let skippedByDate = 0;
   for (const r of rows) {
     const name = String(r[campaignSourceHeader] ?? "");
     const brand = brandForCampaign.get(name);
     if (!brand) continue;
+
+    if (continueDateSourceHeader) {
+      const cutoff = targets.get(brand)?.latestDate;
+      if (cutoff) {
+        const v = r[continueDateSourceHeader];
+        const d = v == null ? "" : String(v).slice(0, 10);
+        if (d && d <= cutoff) {
+          skippedByDate++;
+          continue;
+        }
+      }
+    }
+
     const arr = rowsByBrand.get(brand) ?? [];
     arr.push(r);
     rowsByBrand.set(brand, arr);
     total++;
+  }
+  if (skippedByDate > 0) {
+    onProgress({
+      done: 0,
+      total,
+      stage: `이어서 업로드: 기존 데이터 ${skippedByDate.toLocaleString()}행 건너뜀`,
+    });
   }
 
   onProgress({ done: 0, total, stage: "데이터 업로드 중" });
@@ -878,6 +939,10 @@ async function commitStreamingMultiBrand(
   headerRowIdx: number,
   allHeaders: string[],
   campaignSourceHeader: string,
+  /** Non-null when the user enabled continuation mode and the file has a
+   *  date column. Rows whose date is on/before the destination's latestDate
+   *  are skipped. */
+  continueDateSourceHeader: string | null,
   onProgress: (p: ProgressState) => void,
 ): Promise<number> {
   const PapaMod = await import("papaparse");
@@ -903,6 +968,10 @@ async function commitStreamingMultiBrand(
   const csvIndexOf = firstTarget.sourceHeaders.map((h) =>
     allHeaders.indexOf(h),
   );
+  const dateCsvIdx = continueDateSourceHeader
+    ? allHeaders.indexOf(continueDateSourceHeader)
+    : -1;
+  let skippedByDate = 0;
 
   const skipBeforeData = headerRowIdx + 1;
   const bufByBrand = new Map<string, unknown[][]>();
@@ -919,10 +988,13 @@ async function commitStreamingMultiBrand(
   const reportProgress = () => {
     const pct =
       totalBytes > 0 ? Math.min(100, Math.round((bytesCursor / totalBytes) * 100)) : 0;
+    const skip = skippedByDate
+      ? ` · 기존 ${skippedByDate.toLocaleString()}행 건너뜀`
+      : "";
     onProgress({
       done,
       total: 0,
-      stage: `스트리밍 업로드 ${pct}% · ${fmtBytes(bytesCursor)} / ${fmtBytes(totalBytes)}`,
+      stage: `스트리밍 업로드 ${pct}% · ${fmtBytes(bytesCursor)} / ${fmtBytes(totalBytes)}${skip}`,
     });
   };
 
@@ -973,6 +1045,17 @@ async function commitStreamingMultiBrand(
               if (!brand) continue;
               const buf = bufByBrand.get(brand);
               if (!buf) continue;
+              if (dateCsvIdx >= 0) {
+                const cutoff = targets.get(brand)?.latestDate;
+                if (cutoff) {
+                  const v = row[dateCsvIdx];
+                  const d = v == null ? "" : String(v).slice(0, 10);
+                  if (d && d <= cutoff) {
+                    skippedByDate++;
+                    continue;
+                  }
+                }
+              }
               buf.push(csvIndexOf.map((i) => (i >= 0 ? (row[i] ?? null) : null)));
             }
             if (results.meta?.cursor != null) bytesCursor = results.meta.cursor;

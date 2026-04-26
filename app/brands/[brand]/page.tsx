@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Loader2, FolderOpen, BarChart3, History, Tag } from "lucide-react";
+import { ArrowLeft, Loader2, FolderOpen, BarChart3, History, Tag, Upload } from "lucide-react";
 import ChartBuilder, { type ChartConfigSnapshot } from "@/components/reports/ChartBuilder";
 import ContributionChart from "@/components/reports/ContributionChart";
 import RoasChart from "@/components/reports/RoasChart";
@@ -510,25 +510,42 @@ export default function BrandDetailPage() {
         </Link>
       </Button>
 
-      <div className="flex flex-col gap-0.5">
-        <h1 className="text-2xl font-bold bg-gradient-to-r from-cyan-400 to-purple-400 bg-clip-text text-transparent inline-flex items-center gap-2">
-          <FolderOpen className="text-cyan-300" size={22} />
-          {brand}
-        </h1>
-        <div className="text-xs text-gray-400">
-          {types.length}개 레포트 포함:{" "}
-          {types.map((t, i) => (
-            <span key={t.type.slug}>
-              <Link
-                href={`/reports/${t.type.slug}`}
-                className="text-cyan-300 underline-offset-4 hover:underline"
-              >
-                {t.type.display_name}
-              </Link>
-              {i < types.length - 1 && <span className="text-gray-600"> · </span>}
-            </span>
-          ))}
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="flex flex-col gap-0.5">
+          <h1 className="text-2xl font-bold bg-gradient-to-r from-cyan-400 to-purple-400 bg-clip-text text-transparent inline-flex items-center gap-2">
+            <FolderOpen className="text-cyan-300" size={22} />
+            {brand}
+          </h1>
+          <div className="text-xs text-gray-400">
+            {types.length}개 레포트 포함:{" "}
+            {types.map((t, i) => (
+              <span key={t.type.slug}>
+                <Link
+                  href={`/reports/${t.type.slug}`}
+                  className="text-cyan-300 underline-offset-4 hover:underline"
+                >
+                  {t.type.display_name}
+                </Link>
+                {i < types.length - 1 && <span className="text-gray-600"> · </span>}
+              </span>
+            ))}
+            {brandDateBounds && (
+              <span className="ml-2 text-gray-500">
+                · 데이터 범위{" "}
+                <span className="font-mono text-gray-400">
+                  {brandDateBounds.min} ~ {brandDateBounds.max}
+                </span>
+              </span>
+            )}
+          </div>
         </div>
+        <Link
+          href={`/upload?continue=1&brand=${encodeURIComponent(brand)}`}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-cyan-500/40 bg-cyan-500/10 text-sm text-cyan-200 hover:bg-cyan-500/20 hover:border-cyan-500/60 whitespace-nowrap"
+          title="현재까지 업로드된 시점 이후 데이터만 추가합니다"
+        >
+          <Upload size={14} /> 이어서 업로드
+        </Link>
       </div>
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>

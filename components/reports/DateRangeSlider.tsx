@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 
 interface Props {
   /** Earliest date the data covers (YYYY-MM-DD). */
@@ -32,9 +32,10 @@ function snapToDay(ts: number, base: number): number {
 }
 
 /**
- * Compact dual-handle date range slider. Uses refs for the latest from/to
- * values so the pointermove callback never reads a stale closure, which
- * was why earlier drag attempts dispatched onChange without moving data.
+ * Compact dual-handle date range slider. Visual position is driven by a
+ * local "draft" state during drag — onChange fires once on pointerup so
+ * downstream chart fetches don't thrash on every pointermove. Track clicks
+ * commit immediately.
  */
 export default function DateRangeSlider({
   minDate,
@@ -44,23 +45,18 @@ export default function DateRangeSlider({
   onChange,
 }: Props) {
   const trackRef = useRef<HTMLDivElement>(null);
+  // Active drag preview. While set, the slider renders these values; when
+  // null we mirror the props.
+  const [draft, setDraft] = useState<{ from: number; to: number } | null>(null);
 
   const minTs = parseDate(minDate);
   const maxTs = parseDate(maxDate);
   const span = Math.max(DAY_MS, maxTs - minTs);
 
-  const from = fromDate ? Math.max(minTs, parseDate(fromDate)) : minTs;
-  const to = toDate ? Math.min(maxTs, parseDate(toDate)) : maxTs;
-
-  // Refs mirror the latest props so drag handlers always read the newest
-  // from/to. onChange keeps the same identity across renders even though
-  // parent passes an inline arrow — we read it through a ref too.
-  const fromRef = useRef(from);
-  const toRef = useRef(to);
-  const onChangeRef = useRef(onChange);
-  fromRef.current = from;
-  toRef.current = to;
-  onChangeRef.current = onChange;
+  const baseFrom = fromDate ? Math.max(minTs, parseDate(fromDate)) : minTs;
+  const baseTo = toDate ? Math.min(maxTs, parseDate(toDate)) : maxTs;
+  const from = draft ? draft.from : baseFrom;
+  const to = draft ? draft.to : baseTo;
 
   const leftPct = Math.max(0, Math.min(100, ((from - minTs) / span) * 100));
   const rightPct = Math.max(0, Math.min(100, ((to - minTs) / span) * 100));
@@ -75,20 +71,26 @@ export default function DateRangeSlider({
   function startDrag(handle: "from" | "to", ev: React.PointerEvent) {
     ev.preventDefault();
     ev.stopPropagation();
+    let nextFrom = from;
+    let nextTo = to;
+
     const onMove = (e: PointerEvent) => {
       const ts = Math.max(minTs, Math.min(maxTs, tsAtClientX(e.clientX)));
       if (handle === "from") {
-        const nf = Math.min(ts, toRef.current - DAY_MS);
-        onChangeRef.current(fmtDate(Math.max(minTs, nf)), fmtDate(toRef.current));
+        nextFrom = Math.min(ts, nextTo - DAY_MS);
       } else {
-        const nt = Math.max(ts, fromRef.current + DAY_MS);
-        onChangeRef.current(fmtDate(fromRef.current), fmtDate(Math.min(maxTs, nt)));
+        nextTo = Math.max(ts, nextFrom + DAY_MS);
       }
+      setDraft({ from: nextFrom, to: nextTo });
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
+      // Commit the final position to the parent. Clear draft on the next
+      // tick so the slider re-mirrors props once they update.
+      onChange(fmtDate(nextFrom), fmtDate(nextTo));
+      setDraft(null);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -96,18 +98,21 @@ export default function DateRangeSlider({
   }
 
   function onTrackPointerDown(ev: React.PointerEvent) {
-    // Let the handle's own onPointerDown fire — it sets the right handle.
     if ((ev.target as HTMLElement).dataset.handle) return;
     ev.preventDefault();
     const ts = tsAtClientX(ev.clientX);
     const distFrom = Math.abs(ts - from);
     const distTo = Math.abs(ts - to);
     const handle: "from" | "to" = distFrom <= distTo ? "from" : "to";
+    let nf = from;
+    let nt = to;
     if (handle === "from") {
-      onChange(fmtDate(Math.min(ts, to - DAY_MS)), fmtDate(to));
+      nf = Math.min(ts, to - DAY_MS);
     } else {
-      onChange(fmtDate(from), fmtDate(Math.max(ts, from + DAY_MS)));
+      nt = Math.max(ts, from + DAY_MS);
     }
+    onChange(fmtDate(nf), fmtDate(nt));
+    // Continue dragging from the clicked spot.
     startDrag(handle, ev);
   }
 
