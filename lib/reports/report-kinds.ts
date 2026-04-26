@@ -50,17 +50,13 @@ export const KIND_SEARCH_TERM: KindSchema = {
 export const KIND_TARGET_KEYWORD: KindSchema = {
   slug: "sp_target_keyword",
   display_name: "SP 타겟 키워드 레포트",
-  description: "(date × campaign × target × search term) 기반",
+  description: "(date × campaign × target × match_type) 기반",
   columns: [
     { column_name: "date", data_type: "timestamp", is_key: true, source_headers: ["Date"] },
     { column_name: "campaign_name", data_type: "text", is_key: true, source_headers: ["Campaign name"] },
     { column_name: "campaign_id", data_type: "integer", is_key: false, source_headers: ["Campaign ID"] },
     { column_name: "target_value", data_type: "text", is_key: true, source_headers: ["Target value", "Target"] },
     { column_name: "target_match_type", data_type: "text", is_key: true, source_headers: ["Target match type"] },
-    // In Target keyword reports, "Matched target" is the actual matched entity
-    // (typically an ASIN) — we store it in `search_term` so the same dashboards
-    // can show per-matched-entity breakdowns across both report kinds.
-    { column_name: "search_term", data_type: "text", is_key: true, source_headers: ["Search term", "Matched target", "Customer search term"] },
     { column_name: "budget_currency", data_type: "text", is_key: false, source_headers: ["Budget currency"] },
     { column_name: "impressions", data_type: "integer", is_key: false, source_headers: ["Impressions", "Gross impressions"] },
     { column_name: "clicks", data_type: "integer", is_key: false, source_headers: ["Clicks", "Gross clicks"] },

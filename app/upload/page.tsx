@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -75,7 +75,17 @@ interface CampaignStat {
   auto_rule_pattern: string | null;
 }
 
-export default function UploadPage() {
+export default function UploadPageWrapper() {
+  // Suspense boundary — useSearchParams() inside requires it for the build's
+  // static-prerender pass to succeed.
+  return (
+    <Suspense fallback={null}>
+      <UploadPage />
+    </Suspense>
+  );
+}
+
+function UploadPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   /** When `?continue=1` is in the URL, the upload skips rows whose date is
@@ -114,8 +124,15 @@ export default function UploadPage() {
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState({ done: 0, total: 0, stage: "" });
   const [resultBrands, setResultBrands] = useState<
-    { slug: string; display_name: string }[]
+    {
+      slug: string;
+      display_name: string;
+      rows: number;
+      minDate: string | null;
+      maxDate: string | null;
+    }[]
   >([]);
+  const [resultSkipped, setResultSkipped] = useState<number>(0);
 
   useEffect(() => {
     fetch("/api/reports/types")
@@ -432,20 +449,22 @@ export default function UploadPage() {
       brandTargets.set(brandSlug, (await beginRes.json()) as BeginResponse);
     }
 
-    // For continuation mode, locate the date column's source header so we
-    // can drop rows whose date is on/before each brand's existing max.
+    // Locate the date column's source header. Used both for continuation
+    // mode filtering AND for tracking the per-brand date range surfaced
+    // on the done step.
     const dateEntry = plan.find(
       (h) =>
         h.include &&
         (h.data_type === "date" || h.data_type === "timestamp"),
     );
+    const dateSourceHeader = dateEntry?.source_header ?? null;
     const continueDateSourceHeader =
-      continueMode && dateEntry ? dateEntry.source_header : null;
+      continueMode && dateSourceHeader ? dateSourceHeader : null;
 
-    let totalDone = 0;
+    let result: MultiBrandResult;
     try {
       if (largeCsvMode) {
-        totalDone = await commitStreamingMultiBrand(
+        result = await commitStreamingMultiBrand(
           file,
           brandTargets,
           brandForCampaign,
@@ -453,15 +472,17 @@ export default function UploadPage() {
           headers,
           campaignSourceHeader!,
           continueDateSourceHeader,
+          dateSourceHeader,
           (p) => setProgress(p),
         );
       } else {
-        totalDone = await commitInMemoryMultiBrand(
+        result = await commitInMemoryMultiBrand(
           rows,
           brandTargets,
           brandForCampaign,
           campaignSourceHeader!,
           continueDateSourceHeader,
+          dateSourceHeader,
           (p) => setProgress(p),
         );
       }
@@ -471,6 +492,7 @@ export default function UploadPage() {
       return;
     }
 
+    const totalDone = result.totalDone;
     setProgress({ done: totalDone, total: totalDone, stage: "마무리 중" });
     await Promise.all(
       Array.from(brandTargets.values()).map((t) =>
@@ -485,9 +507,17 @@ export default function UploadPage() {
     setResultBrands(
       Array.from(brandTargets.keys()).map((slug) => {
         const b = brands.find((x) => x.slug === slug);
-        return { slug, display_name: b?.display_name ?? slug };
+        const stat = result.byBrand.get(slug);
+        return {
+          slug,
+          display_name: b?.display_name ?? slug,
+          rows: stat?.rows ?? 0,
+          minDate: stat?.minDate ?? null,
+          maxDate: stat?.maxDate ?? null,
+        };
       }),
     );
+    setResultSkipped(result.skippedByDate);
     setStep("done");
   }
 
@@ -525,6 +555,7 @@ export default function UploadPage() {
     setHeaderRowIdx(0);
     setPlan([]);
     setResultBrands([]);
+    setResultSkipped(0);
     setSelectedKind("");
     setIsNewKind(false);
     setNewKindSlug("");
@@ -750,8 +781,54 @@ export default function UploadPage() {
                 {progress.done.toLocaleString()}행
               </strong>{" "}
               저장 완료 · {resultBrands.length}개 브랜드
+              {resultSkipped > 0 && (
+                <span className="text-emerald-400/80 text-sm ml-2">
+                  (이미 있는 {resultSkipped.toLocaleString()}행은 건너뜀)
+                </span>
+              )}
             </span>
           </div>
+
+          <div className="rounded-lg border border-purple-500/20 bg-slate-800/40 backdrop-blur-xl overflow-hidden">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-900/60">
+                <tr className="text-left text-gray-500 uppercase tracking-wide text-[10px]">
+                  <th className="px-3 py-2 font-medium">브랜드</th>
+                  <th className="px-3 py-2 font-medium text-right">신규 행수</th>
+                  <th className="px-3 py-2 font-medium">기간</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resultBrands.map((b) => (
+                  <tr
+                    key={b.slug}
+                    className="border-t border-purple-500/10"
+                  >
+                    <td className="px-3 py-1.5 text-gray-200 font-medium">
+                      {b.display_name}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums text-cyan-300">
+                      {b.rows.toLocaleString()}
+                    </td>
+                    <td className="px-3 py-1.5 font-mono text-gray-400">
+                      {b.minDate && b.maxDate ? (
+                        b.minDate === b.maxDate ? (
+                          <span>{b.minDate}</span>
+                        ) : (
+                          <span>
+                            {b.minDate} ~ {b.maxDate}
+                          </span>
+                        )
+                      ) : (
+                        <span className="italic text-gray-500">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
           <div className="flex flex-wrap gap-2">
             {resultBrands.map((b) => (
               <Link
@@ -862,6 +939,36 @@ async function sendChunkToServer(
 
 /** In-memory commit routed per brand. Rows in each brand's buffer are uploaded
  *  in CHUNK_SIZE batches with CHUNK_PARALLEL requests in flight. */
+interface BrandUploadStat {
+  rows: number;
+  minDate: string | null;
+  maxDate: string | null;
+}
+
+interface MultiBrandResult {
+  totalDone: number;
+  skippedByDate: number;
+  byBrand: Map<string, BrandUploadStat>;
+}
+
+/** Capture the date string from a row (sliced to YYYY-MM-DD) and update the
+ *  running min/max for the matching brand bucket. */
+function trackDate(
+  bucket: BrandUploadStat,
+  row: Record<string, unknown> | string[] | unknown[],
+  dateKey: string | number | null,
+) {
+  if (dateKey == null) return;
+  const v = Array.isArray(row)
+    ? (row as unknown[])[dateKey as number]
+    : (row as Record<string, unknown>)[dateKey as string];
+  if (v == null) return;
+  const d = String(v).slice(0, 10);
+  if (!d) return;
+  if (bucket.minDate == null || d < bucket.minDate) bucket.minDate = d;
+  if (bucket.maxDate == null || d > bucket.maxDate) bucket.maxDate = d;
+}
+
 async function commitInMemoryMultiBrand(
   rows: Record<string, unknown>[],
   targets: Map<string, BeginResponse>,
@@ -870,9 +977,16 @@ async function commitInMemoryMultiBrand(
   /** When non-null + the brand's begin response carries a latestDate,
    *  rows with date <= that date are skipped (continuation mode). */
   continueDateSourceHeader: string | null,
+  /** Source header of the date column — used for tracking the date range
+   *  of inserted rows even when continueMode isn't on. */
+  dateSourceHeader: string | null,
   onProgress: (p: ProgressState) => void,
-): Promise<number> {
+): Promise<MultiBrandResult> {
   const rowsByBrand = new Map<string, Record<string, unknown>[]>();
+  const stats = new Map<string, BrandUploadStat>();
+  for (const slug of targets.keys()) {
+    stats.set(slug, { rows: 0, minDate: null, maxDate: null });
+  }
   let total = 0;
   let skippedByDate = 0;
   for (const r of rows) {
@@ -892,6 +1006,11 @@ async function commitInMemoryMultiBrand(
       }
     }
 
+    const bucket = stats.get(brand);
+    if (bucket) {
+      bucket.rows++;
+      if (dateSourceHeader) trackDate(bucket, r, dateSourceHeader);
+    }
     const arr = rowsByBrand.get(brand) ?? [];
     arr.push(r);
     rowsByBrand.set(brand, arr);
@@ -928,7 +1047,7 @@ async function commitInMemoryMultiBrand(
       );
     }
   }
-  return done;
+  return { totalDone: done, skippedByDate, byBrand: stats };
 }
 
 /** Streaming multi-brand commit. Per-brand row buffers flushed as they fill. */
@@ -943,8 +1062,11 @@ async function commitStreamingMultiBrand(
    *  date column. Rows whose date is on/before the destination's latestDate
    *  are skipped. */
   continueDateSourceHeader: string | null,
+  /** Source header of the date column — tracked for the per-brand date
+   *  range surfaced on the done step. */
+  dateSourceHeader: string | null,
   onProgress: (p: ProgressState) => void,
-): Promise<number> {
+): Promise<MultiBrandResult> {
   const PapaMod = await import("papaparse");
   type ParseResult = { data: string[][]; meta?: { cursor?: number } };
   type Parser = { pause: () => void; resume: () => void; abort: () => void };
@@ -971,7 +1093,14 @@ async function commitStreamingMultiBrand(
   const dateCsvIdx = continueDateSourceHeader
     ? allHeaders.indexOf(continueDateSourceHeader)
     : -1;
+  const dateTrackIdx = dateSourceHeader
+    ? allHeaders.indexOf(dateSourceHeader)
+    : -1;
   let skippedByDate = 0;
+  const stats = new Map<string, BrandUploadStat>();
+  for (const slug of targets.keys()) {
+    stats.set(slug, { rows: 0, minDate: null, maxDate: null });
+  }
 
   const skipBeforeData = headerRowIdx + 1;
   const bufByBrand = new Map<string, unknown[][]>();
@@ -1026,7 +1155,7 @@ async function commitStreamingMultiBrand(
     }
   };
 
-  return new Promise<number>((resolve, reject) => {
+  return new Promise<MultiBrandResult>((resolve, reject) => {
     Papa.parse(file, {
       skipEmptyLines: "greedy",
       chunk: (results, parser) => {
@@ -1055,6 +1184,11 @@ async function commitStreamingMultiBrand(
                     continue;
                   }
                 }
+              }
+              const bucket = stats.get(brand);
+              if (bucket) {
+                bucket.rows++;
+                if (dateTrackIdx >= 0) trackDate(bucket, row, dateTrackIdx);
               }
               buf.push(csvIndexOf.map((i) => (i >= 0 ? (row[i] ?? null) : null)));
             }
@@ -1091,7 +1225,7 @@ async function commitStreamingMultiBrand(
               }
             }
             if (flushError) return reject(flushError);
-            resolve(done);
+            resolve({ totalDone: done, skippedByDate, byBrand: stats });
           } catch (e) {
             reject(e instanceof Error ? e : new Error(String(e)));
           }

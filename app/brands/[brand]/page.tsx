@@ -10,6 +10,7 @@ import RoasChart from "@/components/reports/RoasChart";
 import DrillDownModal from "@/components/reports/DrillDownModal";
 import CampaignLogTab from "@/components/reports/CampaignLogTab";
 import NicknamesTab from "@/components/reports/NicknamesTab";
+import UploadsTab from "@/components/reports/UploadsTab";
 import ViewsBar from "@/components/reports/ViewsBar";
 import DateRangeSlider from "@/components/reports/DateRangeSlider";
 import { emptyFilter, type FilterState } from "@/lib/reports/filter";
@@ -26,7 +27,7 @@ type TypeInfo = {
 };
 
 interface BrandViewConfig {
-  tab: "dashboard" | "history" | "nicknames";
+  tab: "dashboard" | "history" | "nicknames" | "uploads";
   chart: ChartConfigSnapshot | null;
   searchFilter: FilterState;
   targetFilter: FilterState;
@@ -43,7 +44,7 @@ export default function BrandDetailPage() {
   const [types, setTypes] = useState<TypeInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<"dashboard" | "history" | "nicknames">("dashboard");
+  const [tab, setTab] = useState<"dashboard" | "history" | "nicknames" | "uploads">("dashboard");
 
   /** Drill-down state: when a user clicks 🎯 next to a term in the right
    *  panel, open a modal that queries the raw (sp_raw) table for the
@@ -376,8 +377,26 @@ export default function BrandDetailPage() {
     setActiveViewId(view.id);
     const c = view.config ?? ({} as BrandViewConfig);
     if (c.tab) setTab(c.tab);
-    if (c.searchFilter) setSearchFilter(c.searchFilter);
-    if (c.targetFilter) setTargetFilter(c.targetFilter);
+    // Preserve the live dateColumn (set after types load) so a Recent view
+    // saved before types resolved doesn't blank out the date filter.
+    if (c.searchFilter) {
+      setSearchFilter((prev) => ({
+        ...prev,
+        dateColumn: c.searchFilter.dateColumn ?? prev.dateColumn,
+        dateFrom: c.searchFilter.dateFrom ?? null,
+        dateTo: c.searchFilter.dateTo ?? null,
+        dimensions: c.searchFilter.dimensions ?? {},
+      }));
+    }
+    if (c.targetFilter) {
+      setTargetFilter((prev) => ({
+        ...prev,
+        dateColumn: c.targetFilter.dateColumn ?? prev.dateColumn,
+        dateFrom: c.targetFilter.dateFrom ?? null,
+        dateTo: c.targetFilter.dateTo ?? null,
+        dimensions: c.targetFilter.dimensions ?? {},
+      }));
+    }
     if (typeof c.searchTermsTopN === "number") setSearchTermsTopN(c.searchTermsTopN);
     if (Array.isArray(c.sharedHiddenTerms)) {
       // Tag the hidden set as "owned" by the filter key it was saved against
@@ -561,6 +580,9 @@ export default function BrandDetailPage() {
               <Tag className="h-3.5 w-3.5" /> 캠페인 닉네임
             </TabsTrigger>
           )}
+          <TabsTrigger value="uploads">
+            <Upload className="h-3.5 w-3.5" /> 업로드 관리
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="dashboard" className="space-y-4">
@@ -805,6 +827,10 @@ export default function BrandDetailPage() {
             />
           </TabsContent>
         )}
+
+        <TabsContent value="uploads" className="space-y-4">
+          <UploadsTab brand={brand} />
+        </TabsContent>
       </Tabs>
 
       {drillState && (
