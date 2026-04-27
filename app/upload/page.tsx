@@ -22,6 +22,7 @@ import {
 import {
   ALL_KINDS,
   buildPlanForKind,
+  type KindColumn,
   type KindSchema,
 } from "@/lib/reports/report-kinds";
 import type {
@@ -138,6 +139,13 @@ function UploadPage() {
     }[]
   >([]);
   const [resultSkipped, setResultSkipped] = useState<number>(0);
+  /** When the user picks a kind whose schema can't be matched against the
+   *  uploaded headers, we surface a structured Dimension/Metric list so the
+   *  user sees exactly what's missing — friendlier than a single-line error. */
+  const [schemaError, setSchemaError] = useState<{
+    schema: KindSchema;
+    missing: KindColumn[];
+  } | null>(null);
 
   useEffect(() => {
     fetch("/api/reports/types")
@@ -200,14 +208,10 @@ function UploadPage() {
    *  entirely since Amazon always emits the same columns per kind. */
   async function pickKindSchema(schema: KindSchema) {
     setError(null);
+    setSchemaError(null);
     const { plan: builtPlan, missing } = buildPlanForKind(schema, headers);
     if (missing.length > 0) {
-      const required = missing
-        .map((m) => `${m.column_name} (예: ${m.source_headers[0]})`)
-        .join(", ");
-      setError(
-        `선택한 레포트 종류(${schema.display_name})에 필요한 컬럼이 파일에 없습니다: ${required}`,
-      );
+      setSchemaError({ schema, missing });
       return;
     }
     setSelectedKind(schema.slug);
@@ -687,21 +691,28 @@ function UploadPage() {
             이 파일이 어떤 레포트인지 고르세요. 컬럼 매핑은 자동으로 처리되어
             바로 브랜드 분배 단계로 넘어갑니다.
           </p>
+          {schemaError && (
+            <SchemaMissingNotice
+              schema={schemaError.schema}
+              missing={schemaError.missing}
+              onDismiss={() => setSchemaError(null)}
+            />
+          )}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {ALL_KINDS.map((schema) => (
               <button
                 key={schema.slug}
                 onClick={() => pickKindSchema(schema)}
                 disabled={scanningCampaigns}
-                className="rounded-lg border border-purple-500/20 bg-slate-800/40 backdrop-blur-xl p-4 hover:bg-cyan-500/10 hover:border-cyan-500/40 text-left transition-colors disabled:opacity-50 disabled:pointer-events-none"
+                className="rounded-lg border border-purple-500/20 bg-slate-800/40 backdrop-blur-xl p-4 hover:bg-cyan-500/10 hover:border-cyan-500/40 text-left transition-colors disabled:opacity-50 disabled:pointer-events-none flex flex-col gap-3"
               >
-                <div className="font-medium text-gray-100">{schema.display_name}</div>
-                <div className="text-xs text-gray-500 font-mono mt-1">
-                  {schema.slug}
+                <div>
+                  <div className="font-medium text-gray-100">{schema.display_name}</div>
+                  <div className="text-[11px] text-gray-400 mt-1">
+                    {schema.description}
+                  </div>
                 </div>
-                <div className="text-[11px] text-gray-400 mt-2">
-                  {schema.description}
-                </div>
+                <SchemaColumnPreview schema={schema} />
               </button>
             ))}
           </div>
@@ -896,6 +907,112 @@ function slugify(s: string) {
       .replace(/[^a-z0-9]+/g, "_")
       .replace(/^_+|_+$/g, "")
       .slice(0, 40) || ""
+  );
+}
+
+/** Tiny info block on each kind card — lists required columns split into
+ *  Dimension(필터/그룹용) and Metrics(숫자) so the user knows what to expect
+ *  before clicking. */
+function SchemaColumnPreview({ schema }: { schema: KindSchema }) {
+  const dims = schema.columns.filter((c) => c.category === "dimension");
+  const metrics = schema.columns.filter((c) => c.category === "metric");
+  return (
+    <div className="space-y-1.5 text-[10px] leading-relaxed pt-2 border-t border-purple-500/10">
+      <div>
+        <span className="inline-block px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 font-medium uppercase tracking-wide mr-1.5">
+          Dimension
+        </span>
+        <span className="text-gray-400">
+          {dims.map((c) => c.source_headers[0]).join(" · ")}
+        </span>
+      </div>
+      <div>
+        <span className="inline-block px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 font-medium uppercase tracking-wide mr-1.5">
+          Metric
+        </span>
+        <span className="text-gray-400">
+          {metrics.map((c) => c.source_headers[0]).join(" · ")}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** Friendly missing-columns notice. Shows the full required schema grouped
+ *  into Dimensions and Metrics, with the missing columns highlighted in red,
+ *  so the user can fix the export and re-upload. */
+function SchemaMissingNotice({
+  schema,
+  missing,
+  onDismiss,
+}: {
+  schema: KindSchema;
+  missing: KindColumn[];
+  onDismiss: () => void;
+}) {
+  const missingNames = new Set(missing.map((m) => m.column_name));
+  const dims = schema.columns.filter((c) => c.category === "dimension");
+  const metrics = schema.columns.filter((c) => c.category === "metric");
+
+  const renderCol = (c: KindColumn) => {
+    const isMissing = missingNames.has(c.column_name);
+    return (
+      <li
+        key={c.column_name}
+        className={`flex items-baseline gap-2 ${
+          isMissing ? "text-rose-300" : "text-gray-300"
+        }`}
+      >
+        <span
+          className={`inline-block w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${
+            isMissing ? "bg-rose-400" : "bg-emerald-400/60"
+          }`}
+        />
+        <span className="font-medium">{c.source_headers[0]}</span>
+        <span className="text-[10px] text-gray-500">({c.ko})</span>
+        {isMissing && (
+          <span className="text-[10px] text-rose-300 font-semibold uppercase ml-auto">
+            없음
+          </span>
+        )}
+      </li>
+    );
+  };
+
+  return (
+    <div className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-rose-300">
+            {schema.display_name}에 필요한 컬럼이 일부 빠져 있습니다
+          </div>
+          <div className="text-xs text-gray-400 mt-0.5">
+            업로드한 CSV에 다음 컬럼이 모두 있는지 확인 후 다시 시도하세요. 빨간
+            점은 빠진 컬럼입니다.
+          </div>
+        </div>
+        <button
+          onClick={onDismiss}
+          className="text-xs text-gray-500 hover:text-gray-300"
+        >
+          닫기
+        </button>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-cyan-300 font-bold mb-1.5">
+            Dimension <span className="text-gray-500 font-normal">(필터/그룹 기준)</span>
+          </div>
+          <ul className="text-xs space-y-1">{dims.map(renderCol)}</ul>
+        </div>
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-amber-300 font-bold mb-1.5">
+            Metric <span className="text-gray-500 font-normal">(측정값)</span>
+          </div>
+          <ul className="text-xs space-y-1">{metrics.map(renderCol)}</ul>
+        </div>
+      </div>
+    </div>
   );
 }
 

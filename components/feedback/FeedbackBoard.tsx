@@ -13,12 +13,14 @@ import {
   Check,
   Send,
 } from "lucide-react";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type Status = "open" | "done";
 
 interface FeedbackPost {
   id: string;
   nickname: string;
+  author_email: string | null;
   note: string;
   screenshots: string[];
   status: Status;
@@ -30,16 +32,42 @@ interface FeedbackComment {
   id: string;
   post_id: string;
   nickname: string;
+  author_email: string | null;
   note: string;
   created_at: string;
 }
 
+/** Hook: resolve the signed-in user's email so we can hide edit/delete
+ *  buttons on posts/comments the current user didn't write. */
+function useMyEmail(): string | null {
+  const [email, setEmail] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const supabase = createSupabaseBrowserClient();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!cancelled) setEmail(user?.email ?? null);
+      } catch {
+        // noop
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return email;
+}
+
 /**
- * Public feedback board — anyone with the app passcode can leave a post
- * (nickname + note + optional screenshots). Shown on the /reports landing
- * page so it's the first thing teammates see after logging in.
+ * Public feedback board. Author of each post is the signed-in Google user
+ * (no nickname input). Edit/delete is restricted to the author. Comments
+ * can be left by anyone signed in; only the comment's author can delete.
  */
 export default function FeedbackBoard() {
+  const myEmail = useMyEmail();
   const [posts, setPosts] = useState<FeedbackPost[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,8 +105,6 @@ export default function FeedbackBoard() {
   }
 
   async function toggleStatus(p: FeedbackPost) {
-    // Only two states in the UI: 접수 ↔ 완료. Meant for the developer to
-    // mark done once the request has been implemented.
     const next: Status = p.status === "done" ? "open" : "done";
     const res = await fetch(`/api/feedback/${p.id}`, {
       method: "PATCH",
@@ -159,6 +185,7 @@ export default function FeedbackBoard() {
               <PostCard
                 key={p.id}
                 post={p}
+                myEmail={myEmail}
                 onEdit={() => setEditingId(p.id)}
                 onDelete={() => deletePost(p.id)}
                 onToggleStatus={() => toggleStatus(p)}
@@ -173,7 +200,6 @@ export default function FeedbackBoard() {
 
 function fmtWhen(iso: string): string {
   const d = new Date(iso);
-  // Deterministic local format — avoids hydration mismatch between server/client.
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
     d.getDate(),
   ).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(
@@ -186,18 +212,20 @@ const STATUS_DONE_STYLE = "bg-emerald-500/15 text-emerald-300 border-emerald-500
 
 function PostCard({
   post,
+  myEmail,
   onEdit,
   onDelete,
   onToggleStatus,
 }: {
   post: FeedbackPost;
+  myEmail: string | null;
   onEdit: () => void;
   onDelete: () => void;
   onToggleStatus: () => void;
 }) {
   const isDone = post.status === "done";
+  const isMine = !!myEmail && post.author_email === myEmail;
 
-  // Comments — loaded lazily when the section mounts.
   const [comments, setComments] = useState<FeedbackComment[]>([]);
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [commentsRefresh, setCommentsRefresh] = useState(0);
@@ -238,7 +266,12 @@ function PostCard({
     >
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-semibold text-gray-100">{post.nickname}</span>
+          <span
+            className="text-sm font-semibold text-gray-100 truncate max-w-[260px]"
+            title={post.author_email ?? post.nickname}
+          >
+            {post.nickname}
+          </span>
           <span className="text-[11px] text-gray-500">{fmtWhen(post.created_at)}</span>
           <button
             onClick={onToggleStatus}
@@ -251,22 +284,24 @@ function PostCard({
             {isDone ? "완료" : "접수"}
           </button>
         </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={onEdit}
-            className="p-1.5 rounded-md text-gray-400 hover:text-cyan-300 hover:bg-white/5"
-            title="수정"
-          >
-            <Pencil size={14} />
-          </button>
-          <button
-            onClick={onDelete}
-            className="p-1.5 rounded-md text-gray-400 hover:text-rose-300 hover:bg-rose-500/10"
-            title="삭제"
-          >
-            <Trash2 size={14} />
-          </button>
-        </div>
+        {isMine && (
+          <div className="flex items-center gap-1">
+            <button
+              onClick={onEdit}
+              className="p-1.5 rounded-md text-gray-400 hover:text-cyan-300 hover:bg-white/5"
+              title="수정"
+            >
+              <Pencil size={14} />
+            </button>
+            <button
+              onClick={onDelete}
+              className="p-1.5 rounded-md text-gray-400 hover:text-rose-300 hover:bg-rose-500/10"
+              title="삭제"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        )}
       </div>
       <p
         className={`text-sm whitespace-pre-wrap ${
@@ -301,23 +336,33 @@ function PostCard({
           <div className="text-xs text-gray-500">아직 댓글이 없습니다.</div>
         ) : (
           <ul className="space-y-1.5">
-            {comments.map((c) => (
-              <li
-                key={c.id}
-                className="flex items-start gap-2 text-xs group"
-              >
-                <span className="text-cyan-300 font-medium shrink-0">{c.nickname}</span>
-                <span className="text-gray-500 shrink-0">{fmtWhen(c.created_at)}</span>
-                <span className="text-gray-200 whitespace-pre-wrap flex-1">{c.note}</span>
-                <button
-                  onClick={() => deleteComment(c.id)}
-                  className="opacity-0 group-hover:opacity-100 p-0.5 text-gray-500 hover:text-rose-300"
-                  title="댓글 삭제"
+            {comments.map((c) => {
+              const mineComment = !!myEmail && c.author_email === myEmail;
+              return (
+                <li
+                  key={c.id}
+                  className="flex items-start gap-2 text-xs group"
                 >
-                  <X size={11} />
-                </button>
-              </li>
-            ))}
+                  <span
+                    className="text-cyan-300 font-medium shrink-0 truncate max-w-[180px]"
+                    title={c.author_email ?? c.nickname}
+                  >
+                    {c.nickname}
+                  </span>
+                  <span className="text-gray-500 shrink-0">{fmtWhen(c.created_at)}</span>
+                  <span className="text-gray-200 whitespace-pre-wrap flex-1">{c.note}</span>
+                  {mineComment && (
+                    <button
+                      onClick={() => deleteComment(c.id)}
+                      className="opacity-0 group-hover:opacity-100 p-0.5 text-gray-500 hover:text-rose-300"
+                      title="댓글 삭제"
+                    >
+                      <X size={11} />
+                    </button>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
         <CommentForm
@@ -336,22 +381,12 @@ function CommentForm({
   postId: string;
   onSaved: () => void;
 }) {
-  const [nickname, setNickname] = useState<string>(
-    typeof window !== "undefined"
-      ? localStorage.getItem("feedback_nickname") ?? ""
-      : "",
-  );
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   async function submit() {
-    const nick = nickname.trim();
     const text = note.trim();
-    if (!nick) {
-      setErr("닉네임을 입력하세요.");
-      return;
-    }
     if (!text) {
       setErr("댓글 내용을 입력하세요.");
       return;
@@ -361,7 +396,7 @@ function CommentForm({
     const res = await fetch(`/api/feedback/${postId}/comments`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ nickname: nick, note: text }),
+      body: JSON.stringify({ note: text }),
     });
     setSaving(false);
     if (!res.ok) {
@@ -369,21 +404,12 @@ function CommentForm({
       setErr(j.error ?? `저장 실패 (${res.status})`);
       return;
     }
-    if (typeof window !== "undefined") {
-      localStorage.setItem("feedback_nickname", nick);
-    }
     setNote("");
     onSaved();
   }
 
   return (
     <div className="flex items-start gap-2">
-      <input
-        value={nickname}
-        onChange={(e) => setNickname(e.target.value)}
-        placeholder="닉네임"
-        className="w-24 shrink-0 rounded-md border border-purple-500/20 bg-slate-900 text-gray-200 px-2 py-1 text-xs focus:border-cyan-500 focus:outline-none"
-      />
       <input
         value={note}
         onChange={(e) => setNote(e.target.value)}
@@ -420,9 +446,6 @@ function PostForm({
   onCancel: () => void;
   onSaved: () => void;
 }) {
-  const [nickname, setNickname] = useState<string>(
-    initial?.nickname ?? (typeof window !== "undefined" ? localStorage.getItem("feedback_nickname") ?? "" : ""),
-  );
   const [note, setNote] = useState<string>(initial?.note ?? "");
   const [screenshots, setScreenshots] = useState<string[]>(initial?.screenshots ?? []);
   const [uploading, setUploading] = useState(false);
@@ -473,19 +496,14 @@ function PostForm({
   }
 
   async function save() {
-    const trimmedNick = nickname.trim();
     const trimmedNote = note.trim();
-    if (!trimmedNick) {
-      setErr("닉네임을 입력하세요.");
-      return;
-    }
     if (!trimmedNote) {
       setErr("내용을 입력하세요.");
       return;
     }
     setSaving(true);
     setErr(null);
-    const body = { nickname: trimmedNick, note: trimmedNote, screenshots };
+    const body = { note: trimmedNote, screenshots };
     const url = initial ? `/api/feedback/${initial.id}` : "/api/feedback";
     const method = initial ? "PATCH" : "POST";
     const res = await fetch(url, {
@@ -499,10 +517,6 @@ function PostForm({
       setErr(j.error ?? `저장 실패 (${res.status})`);
       return;
     }
-    // Remember the nickname so the user doesn't retype it next time.
-    if (typeof window !== "undefined") {
-      localStorage.setItem("feedback_nickname", trimmedNick);
-    }
     onSaved();
   }
 
@@ -515,18 +529,6 @@ function PostForm({
       onPaste={handlePaste}
       className="p-4 rounded-lg border border-cyan-500/30 bg-slate-800/60 space-y-3"
     >
-      <div className="flex flex-wrap items-center gap-3">
-        <label className="inline-flex items-center gap-2 text-xs text-gray-400">
-          닉네임
-          <input
-            value={nickname}
-            onChange={(e) => setNickname(e.target.value)}
-            placeholder="예: 상엽"
-            className="rounded-md border border-purple-500/30 bg-slate-900 text-gray-200 px-2 py-1 text-sm w-40 focus:border-cyan-500 focus:outline-none"
-          />
-        </label>
-      </div>
-
       <textarea
         value={note}
         onChange={(e) => setNote(e.target.value)}

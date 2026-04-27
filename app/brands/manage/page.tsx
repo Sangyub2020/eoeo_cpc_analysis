@@ -19,7 +19,6 @@ export default function BrandManagePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [newSlug, setNewSlug] = useState("");
   const [newDisplayName, setNewDisplayName] = useState("");
   const [adding, setAdding] = useState(false);
 
@@ -61,10 +60,9 @@ export default function BrandManagePage() {
   }, [rules]);
 
   async function addBrand() {
-    const slug = newSlug.trim();
     const name = newDisplayName.trim();
-    if (!slug || !name) {
-      setError("slug와 표시 이름이 모두 필요합니다.");
+    if (!name) {
+      setError("브랜드 이름이 필요합니다.");
       return;
     }
     setAdding(true);
@@ -73,11 +71,10 @@ export default function BrandManagePage() {
       const res = await fetch("/api/brands/catalog", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ slug, display_name: name }),
+        body: JSON.stringify({ display_name: name }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
-      setNewSlug("");
       setNewDisplayName("");
       await reload();
     } catch (e) {
@@ -172,24 +169,19 @@ export default function BrandManagePage() {
 
       <div className="p-4 rounded-lg border border-purple-500/20 bg-slate-800/40 backdrop-blur-xl space-y-3">
         <h2 className="text-sm font-medium text-gray-200">새 브랜드 추가</h2>
-        <div className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
+        <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
           <label className="space-y-1">
-            <span className="text-xs text-gray-400">slug (식별자)</span>
-            <input
-              value={newSlug}
-              onChange={(e) =>
-                setNewSlug(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_"))
-              }
-              placeholder="kahi"
-              className="w-full rounded border border-purple-500/30 bg-slate-900 px-2 py-1.5 text-sm font-mono text-gray-200 focus:border-cyan-500 focus:outline-none"
-            />
-          </label>
-          <label className="space-y-1">
-            <span className="text-xs text-gray-400">표시 이름</span>
+            <span className="text-xs text-gray-400">브랜드 이름</span>
             <input
               value={newDisplayName}
               onChange={(e) => setNewDisplayName(e.target.value)}
-              placeholder="KAHI"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !adding) {
+                  e.preventDefault();
+                  void addBrand();
+                }
+              }}
+              placeholder="예: KAHI"
               className="w-full rounded border border-purple-500/30 bg-slate-900 px-2 py-1.5 text-sm text-gray-200 focus:border-cyan-500 focus:outline-none"
             />
           </label>
@@ -203,8 +195,9 @@ export default function BrandManagePage() {
           </button>
         </div>
         <p className="text-[11px] text-gray-500">
-          추가 시 표시 이름을 포함하는 <span className="font-mono">contains</span>{" "}
-          룰이 자동 생성됩니다 (대소문자 무관). 필요 시 아래 룰 목록에서 추가/수정/삭제하세요.
+          이름만 입력하면 충분합니다. 캠페인 이름에 이 브랜드명을 포함하는
+          <span className="font-mono"> contains</span> 룰이 자동 생성됩니다(대소문자 무관).
+          내부 식별자(slug)는 시스템이 알아서 만듭니다.
         </p>
       </div>
 

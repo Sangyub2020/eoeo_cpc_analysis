@@ -53,7 +53,7 @@ export default function UserMenu() {
     <div className="inline-flex items-center gap-2">
       {email && (
         <span
-          className="hidden md:inline text-xs text-gray-400 max-w-[180px] truncate"
+          className="text-xs text-cyan-300 font-medium max-w-[220px] truncate"
           title={email}
         >
           {email}
