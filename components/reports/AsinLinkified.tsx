@@ -29,7 +29,9 @@ interface Match {
   end: number; // exclusive end index
 }
 
-const PREFIX_RE = /^[\s"'`]*(asin=)?/i;
+// Allow optional whitespace / quote chars BOTH before and after the optional
+// `asin=` prefix, so `asin="B0XXXXXXXX"` also gets linked.
+const PREFIX_RE = /^[\s"'`]*(asin=)?[\s"'`]*/i;
 const ASIN_AT_START_RE = /^B0[A-Z0-9]{8}(?![A-Z0-9])/i;
 
 function findAsinAtStart(text: string): Match | null {
