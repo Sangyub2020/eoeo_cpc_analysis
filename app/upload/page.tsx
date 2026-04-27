@@ -33,9 +33,14 @@ import type {
 
 type Step = "pick" | "kind" | "assign" | "committing" | "done";
 
-const CHUNK_SIZE = 8000;
-const CHUNK_PARALLEL = 6;
-const CHUNK_SIZE_STREAMING = 3000;
+// Tuned for INSERT into wide tables with multiple indexes (e.g. sp_raw).
+// Smaller chunks finish well below any statement_timeout, lower parallel
+// count keeps index-page lock contention bounded — empirically faster
+// than fewer-bigger-chunks at higher parallelism on multi-million-row
+// destinations.
+const CHUNK_SIZE = 2000;
+const CHUNK_PARALLEL = 4;
+const CHUNK_SIZE_STREAMING = 1500;
 const CHUNK_PARALLEL_STREAMING = 3;
 const LARGE_CSV_THRESHOLD = 100 * 1024 * 1024;
 const PREVIEW_SLICE_BYTES = 1 * 1024 * 1024;
@@ -460,6 +465,11 @@ function UploadPage() {
     const dateSourceHeader = dateEntry?.source_header ?? null;
     const continueDateSourceHeader =
       continueMode && dateSourceHeader ? dateSourceHeader : null;
+    // In continue mode every row is past the destination's max(date), so no
+    // existing-row conflict is possible. Tell the server to use the cheaper
+    // ON CONFLICT DO NOTHING path instead of DO UPDATE — saves a lot of
+    // index work on huge tables like sp_raw.
+    const conflictMode: "merge" | "ignore" = continueMode ? "ignore" : "merge";
 
     let result: MultiBrandResult;
     try {
@@ -473,6 +483,7 @@ function UploadPage() {
           campaignSourceHeader!,
           continueDateSourceHeader,
           dateSourceHeader,
+          conflictMode,
           (p) => setProgress(p),
         );
       } else {
@@ -483,6 +494,7 @@ function UploadPage() {
           campaignSourceHeader!,
           continueDateSourceHeader,
           dateSourceHeader,
+          conflictMode,
           (p) => setProgress(p),
         );
       }
@@ -892,6 +904,7 @@ type ProgressState = { done: number; total: number; stage: string };
 async function sendChunkToServer(
   begin: BeginResponse,
   rows: unknown[][],
+  conflictMode: "merge" | "ignore" = "merge",
 ): Promise<void> {
   const body = JSON.stringify({
     upload_id: begin.upload_id,
@@ -900,6 +913,7 @@ async function sendChunkToServer(
     keyColumns: begin.keyColumns,
     dataTypes: begin.dataTypes,
     rows,
+    conflictMode,
   });
   const TRANSIENT = new Set([429, 500, 502, 503, 504, 522, 524]);
   const MAX_ATTEMPTS = 5;
@@ -980,6 +994,10 @@ async function commitInMemoryMultiBrand(
   /** Source header of the date column — used for tracking the date range
    *  of inserted rows even when continueMode isn't on. */
   dateSourceHeader: string | null,
+  /** When "ignore", chunks tell the server to use ON CONFLICT DO NOTHING
+   *  — much faster on large tables since it avoids the UPDATE path. Safe
+   *  in continuation mode where every row is past the table's max date. */
+  conflictMode: "merge" | "ignore",
   onProgress: (p: ProgressState) => void,
 ): Promise<MultiBrandResult> {
   const rowsByBrand = new Map<string, Record<string, unknown>[]>();
@@ -1040,7 +1058,7 @@ async function commitInMemoryMultiBrand(
           const rowArrays = chunk.map((r) =>
             begin.sourceHeaders.map((h) => r[h]),
           );
-          await sendChunkToServer(begin, rowArrays);
+          await sendChunkToServer(begin, rowArrays, conflictMode);
           done += chunk.length;
           onProgress({ done, total, stage: `${brandSlug} 업로드 중` });
         }),
@@ -1065,6 +1083,9 @@ async function commitStreamingMultiBrand(
   /** Source header of the date column — tracked for the per-brand date
    *  range surfaced on the done step. */
   dateSourceHeader: string | null,
+  /** Same semantics as the in-memory path — "ignore" lets the server skip
+   *  the heavier ON CONFLICT DO UPDATE path. */
+  conflictMode: "merge" | "ignore",
   onProgress: (p: ProgressState) => void,
 ): Promise<MultiBrandResult> {
   const PapaMod = await import("papaparse");
@@ -1138,7 +1159,7 @@ async function commitStreamingMultiBrand(
           if (flushError) break;
           const chunk = buf.splice(0, CHUNK_SIZE_STREAMING);
           const begin = targets.get(brandSlug)!;
-          const p = sendChunkToServer(begin, chunk)
+          const p = sendChunkToServer(begin, chunk, conflictMode)
             .then(() => {
               done += chunk.length;
               reportProgress();
@@ -1218,7 +1239,7 @@ async function commitStreamingMultiBrand(
               const begin = targets.get(brandSlug)!;
               while (buf.length > 0 && !flushError) {
                 const chunk = buf.splice(0, CHUNK_SIZE_STREAMING);
-                await sendChunkToServer(begin, chunk);
+                await sendChunkToServer(begin, chunk, conflictMode);
                 done += chunk.length;
                 bytesCursor = totalBytes;
                 reportProgress();

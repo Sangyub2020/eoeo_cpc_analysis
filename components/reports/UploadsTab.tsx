@@ -34,7 +34,10 @@ interface Props {
  */
 export default function UploadsTab({ brand }: Props) {
   const [types, setTypes] = useState<TypeWithUploads[]>([]);
-  const [loading, setLoading] = useState(false);
+  // Start loading=true so the very first render shows "불러오는 중..." rather
+  // than flashing the "등록된 레포트 없음" empty state for a frame before the
+  // useEffect runs setLoading(true).
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [deletingId, setDeletingId] = useState<string | null>(null);

@@ -22,7 +22,7 @@ export async function GET(
   const supabase = getSupabaseAdmin();
   const { data: types, error } = await supabase
     .from("report_types")
-    .select("id, slug, display_name, table_name, key_columns, created_at, brand")
+    .select("id, slug, display_name, table_name, key_columns, created_at, brand, kind")
     .eq("brand", brand)
     .order("created_at", { ascending: true });
   if (error) {

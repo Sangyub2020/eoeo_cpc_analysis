@@ -38,7 +38,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "invalid json" }, { status: 400 });
   }
 
-  const { slug, display_name, isNewType, headerPlan, fileName, expectedRowCount } = payload;
+  const { slug, display_name, headerPlan, fileName, expectedRowCount } = payload;
   const brand = payload.brand?.trim() ? payload.brand.trim() : null;
   const kind = payload.kind?.trim() ? payload.kind.trim() : null;
 
@@ -72,17 +72,20 @@ export async function POST(req: Request) {
 
   const supabase = getSupabaseAdmin();
 
-  let reportTypeId: string;
-  if (isNewType) {
-    const { data: dup } = await supabase
-      .from("report_types")
-      .select("slug")
-      .eq("slug", slug)
-      .maybeSingle();
-    if (dup) {
-      return NextResponse.json({ error: `slug already exists: ${slug}` }, { status: 409 });
-    }
+  // Auto-detect create-vs-update by querying for the slug — don't trust the
+  // client's `isNewType` flag. The upload page caches the type list at mount
+  // and a fresh tab clicking 이어서 업로드 right after a previous upload can
+  // race the cache, sending isNewType=true for a slug that now exists. Make
+  // begin idempotent so it just does the right thing either way.
+  const { data: existingType } = await supabase
+    .from("report_types")
+    .select("id, table_name")
+    .eq("slug", slug)
+    .maybeSingle();
+  const goingToCreate = !existingType;
 
+  let reportTypeId: string;
+  if (goingToCreate) {
     try {
       await execSQL(
         buildCreateTableSQL(
@@ -132,18 +135,10 @@ export async function POST(req: Request) {
     );
     if (colErr) return NextResponse.json({ error: colErr.message }, { status: 500 });
   } else {
-    const { data: existing, error: exErr } = await supabase
-      .from("report_types")
-      .select("id, table_name")
-      .eq("slug", slug)
-      .single();
-    if (exErr || !existing) {
-      return NextResponse.json({ error: "existing type not found" }, { status: 404 });
-    }
-    if (existing.table_name !== tableName) {
+    if (existingType.table_name !== tableName) {
       return NextResponse.json({ error: "slug mismatch with stored table_name" }, { status: 409 });
     }
-    reportTypeId = existing.id;
+    reportTypeId = existingType.id;
 
     // If the caller supplied a brand on an existing type, overwrite — makes
     // it easy to retroactively group a report that was created before the
@@ -155,7 +150,22 @@ export async function POST(req: Request) {
       await supabase.from("report_types").update(patch).eq("id", reportTypeId);
     }
 
-    const newCols = activePlan.filter((h) => h.is_new);
+    // Don't trust the client's `is_new` flag — it can be stale (e.g. when the
+    // upload page's existingTypes cache loaded before another tab created the
+    // type, or before pickKindSchema's existingColumns fetch resolved). Look
+    // up the actual column set from the DB and ALTER TABLE only for genuinely
+    // missing columns. Avoids running needless ADD COLUMN against a
+    // multi-million-row sp_raw table, which acquires locks and times out.
+    const { data: actualCols } = await supabase
+      .from("report_columns")
+      .select("column_name")
+      .eq("report_type_id", reportTypeId);
+    const existingColSet = new Set(
+      (actualCols ?? []).map((c) => c.column_name),
+    );
+    const newCols = activePlan.filter(
+      (h) => !existingColSet.has(h.column_name),
+    );
     for (const c of newCols) {
       try {
         await execSQL(buildAddColumnSQL(tableName, c.column_name, c.data_type as DataType));
@@ -201,7 +211,7 @@ export async function POST(req: Request) {
   // (optionally) skip rows it already has — used by the "이어서 업로드"
   // continuation flow on the brand page. Cheap query (min/max with no scan).
   let latestDate: string | null = null;
-  if (!isNewType) {
+  if (!goingToCreate) {
     try {
       const dateColEntry = activePlan.find(
         (h) => h.data_type === "date" || h.data_type === "timestamp",

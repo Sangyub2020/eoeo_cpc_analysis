@@ -13,6 +13,13 @@ interface ChunkPayload {
   keyColumns: string[];
   dataTypes: DataType[];
   rows: unknown[][];
+  /** Conflict resolution mode:
+   *  - "merge" (default): ON CONFLICT DO UPDATE — overwrites existing rows
+   *  - "ignore": ON CONFLICT DO NOTHING — much faster, used when the caller
+   *    knows none of these rows can collide with existing DB rows (e.g.
+   *    "이어서 업로드" mode where every row is past the table's max date).
+   */
+  conflictMode?: "merge" | "ignore";
 }
 
 export async function POST(req: Request) {
@@ -24,6 +31,8 @@ export async function POST(req: Request) {
   }
 
   const { upload_id, tableName, columnNames, keyColumns, dataTypes, rows } = payload;
+  const conflictMode: "merge" | "ignore" =
+    payload.conflictMode === "ignore" ? "ignore" : "merge";
   if (!upload_id) return NextResponse.json({ error: "upload_id required" }, { status: 400 });
   if (!rows?.length) return NextResponse.json({ ok: true, inserted: 0 });
   if (columnNames.length !== dataTypes.length) {
@@ -59,7 +68,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    await restInsertBatch({ tableName, rows: payloadRows, keyColumns });
+    await restInsertBatch({ tableName, rows: payloadRows, keyColumns, conflictMode });
   } catch (e) {
     return NextResponse.json(
       { error: `insert failed: ${e instanceof Error ? e.message : e}` },
@@ -80,6 +89,7 @@ async function restInsertBatch(args: {
   tableName: string;
   rows: Record<string, unknown>[];
   keyColumns: string[];
+  conflictMode: "merge" | "ignore";
 }): Promise<void> {
   const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -90,7 +100,14 @@ async function restInsertBatch(args: {
     url.searchParams.set("on_conflict", args.keyColumns.join(","));
   }
   const prefer = ["return=minimal"];
-  if (args.keyColumns.length) prefer.push("resolution=merge-duplicates");
+  if (args.keyColumns.length) {
+    // PostgREST: merge-duplicates → DO UPDATE (default), ignore-duplicates → DO NOTHING.
+    prefer.push(
+      args.conflictMode === "ignore"
+        ? "resolution=ignore-duplicates"
+        : "resolution=merge-duplicates",
+    );
+  }
 
   const body = JSON.stringify(args.rows);
   const headers: Record<string, string> = {

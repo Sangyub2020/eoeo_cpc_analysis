@@ -19,7 +19,9 @@ import {
   ReferenceArea,
   ResponsiveContainer,
 } from "recharts";
-import { Loader2, Search, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { Loader2, Search, ArrowUp, ArrowDown, ArrowUpDown, FileText, X } from "lucide-react";
+import AsinLinkified from "@/components/reports/AsinLinkified";
+import { createPortal } from "react-dom";
 import type { ReportColumn } from "@/lib/reports/types";
 import type { FilterState } from "@/lib/reports/filter";
 import { fmtShortDate } from "@/lib/reports/format";
@@ -48,6 +50,9 @@ interface Props {
    *  `campaign_name`: chart title shows "name (nickname) 외 N", right panel
    *  shows just the nickname. When no mapping, falls back to raw names. */
   nicknames?: Record<string, string>;
+  /** Brand context — passed through to the right-panel so the per-campaign
+   *  history (수정일지) popup can fetch entries for this brand only. */
+  brand?: string;
 }
 
 export interface ChartConfigSnapshot {
@@ -81,19 +86,23 @@ interface BucketInfo {
   roas: number | null;
 }
 
-export default function ChartBuilder({ slug, columns, filter, setFilter, initialConfig, onConfigChange, nicknames }: Props) {
+export default function ChartBuilder({ slug, columns, filter, setFilter, initialConfig, onConfigChange, nicknames, brand }: Props) {
   const numericCols = columns.filter(
     (c) => c.data_type === "numeric" || c.data_type === "integer",
   );
   const firstDate = columns.find(
     (c) => c.data_type === "date" || c.data_type === "timestamp",
   );
-  /** Columns eligible as a grouping dimension — only text columns, but we
-   *  exclude low-signal dimensions that clutter the UI (e.g. budget_currency
-   *  which is typically a single value like "USD"). */
-  const HIDDEN_DIMS = new Set<string>(["budget_currency"]);
+  /** Columns eligible as a grouping dimension. Restricted to the three
+   *  meaningful pivot axes (campaign / search term / target value) so the
+   *  unit toggle stays focused — match-type / currency / etc. just clutter. */
+  const ALLOWED_GROUP_DIMS = new Set<string>([
+    "campaign_name",
+    "search_term",
+    "target_value",
+  ]);
   const groupableCols = columns.filter(
-    (c) => c.data_type === "text" && !HIDDEN_DIMS.has(c.column_name),
+    (c) => c.data_type === "text" && ALLOWED_GROUP_DIMS.has(c.column_name),
   );
 
   const [kind, setKind] = useState<ChartKind>(initialConfig?.kind ?? "line");
@@ -580,7 +589,7 @@ export default function ChartBuilder({ slug, columns, filter, setFilter, initial
                 className="text-base font-semibold text-gray-100 truncate max-w-[720px]"
                 title={first}
               >
-                {first}
+                <AsinLinkified text={first} />
               </span>
               {firstNickname && (
                 <span
@@ -717,12 +726,13 @@ export default function ChartBuilder({ slug, columns, filter, setFilter, initial
             )}
           </div>
 
-          {groupCol && termStats.length > 0 && (
+          {groupCol && (
             <GroupPanel
               stackLabel={
                 columns.find((c) => c.column_name === groupCol)?.source_header ?? groupCol
               }
               stats={termStats}
+              loading={autoFilling}
               selected={filter.dimensions?.[groupCol] ?? []}
               onChange={(vals) => {
                 const next = { ...(filter.dimensions ?? {}) };
@@ -731,6 +741,8 @@ export default function ChartBuilder({ slug, columns, filter, setFilter, initial
                 setFilter({ ...filter, dimensions: next });
               }}
               nicknames={groupCol === "campaign_name" ? nicknames : undefined}
+              brand={brand}
+              showHistoryIcon={groupCol === "campaign_name"}
             />
           )}
         </div>
@@ -745,21 +757,58 @@ type SortDir = "asc" | "desc";
 function GroupPanel({
   stackLabel,
   stats,
+  loading,
   selected,
   onChange,
   nicknames,
+  brand,
+  showHistoryIcon,
 }: {
   stackLabel: string;
   stats: { value: string; cost: number; sales: number; roas: number | null }[];
+  /** True while the distinct fetch is in flight. Renders a loading hint
+   *  so the user sees the panel structure immediately instead of an
+   *  empty viewport. */
+  loading?: boolean;
   selected: string[];
   onChange: (v: string[]) => void;
   /** Present only when grouping by campaign_name — if a row has a nickname,
    *  we show the nickname in place of the raw campaign_name. */
   nicknames?: Record<string, string>;
+  /** Brand context for the per-campaign history (수정일지) popup. */
+  brand?: string;
+  /** Show the history popup icon next to each row (only meaningful when
+   *  grouping by campaign_name). */
+  showHistoryIcon?: boolean;
 }) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>(null);
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [historyCampaign, setHistoryCampaign] = useState<string | null>(null);
+  /** Set of campaign_names that have at least one history entry. Loaded
+   *  once when the panel mounts under a campaign_name groupCol so we can
+   *  show the icon only on campaigns that actually have edits. */
+  const [campaignsWithHistory, setCampaignsWithHistory] = useState<Set<string>>(
+    new Set(),
+  );
+
+  useEffect(() => {
+    if (!showHistoryIcon || !brand) return;
+    const abort = new AbortController();
+    fetch(`/api/brands/${encodeURIComponent(brand)}/history`, {
+      signal: abort.signal,
+    })
+      .then((r) => r.json())
+      .then((j) => {
+        const set = new Set<string>();
+        for (const e of (j.entries ?? []) as { campaign_name?: string | null }[]) {
+          if (e.campaign_name) set.add(e.campaign_name);
+        }
+        setCampaignsWithHistory(set);
+      })
+      .catch(() => {});
+    return () => abort.abort();
+  }, [brand, showHistoryIcon]);
 
   const selectedSet = new Set(selected);
   function toggle(v: string) {
@@ -836,6 +885,9 @@ function GroupPanel({
         <SortHeaderBtn label="Sales" width="w-14" activeKey={sortKey} dir={sortDir} myKey="sales" onClick={() => handleSortClick("sales")} />
         <SortHeaderBtn label="ROAS" width="w-12" activeKey={sortKey} dir={sortDir} myKey="roas" onClick={() => handleSortClick("roas")} />
         <span className="w-10 text-right shrink-0">비중</span>
+        {showHistoryIcon && (
+          <span className="w-6 text-center shrink-0 normal-case">일지</span>
+        )}
       </div>
       <div className="overflow-auto max-h-[420px] text-xs">
         {(() => {
@@ -866,7 +918,7 @@ function GroupPanel({
                   className="flex-1 truncate text-gray-200"
                   title={nicknames?.[s.value] ? `${nicknames[s.value]} — ${s.value}` : s.value}
                 >
-                  {nicknames?.[s.value] ?? s.value}
+                  <AsinLinkified text={nicknames?.[s.value] ?? s.value} />
                 </span>
                 <span className="w-14 tabular-nums text-gray-400 text-right shrink-0">
                   {fmtMoneyShort(s.cost)}
@@ -888,14 +940,51 @@ function GroupPanel({
                 <span className="w-10 tabular-nums text-cyan-300/80 text-right shrink-0">
                   {share != null ? fmtPctShort(share) : "—"}
                 </span>
+                {showHistoryIcon && (
+                  <span className="w-6 flex justify-center shrink-0">
+                    {campaignsWithHistory.has(s.value) ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setHistoryCampaign(s.value);
+                        }}
+                        className="p-0.5 rounded text-amber-300 hover:text-amber-200 hover:bg-amber-500/10"
+                        title="수정일지 열기"
+                      >
+                        <FileText size={12} />
+                      </button>
+                    ) : null}
+                  </span>
+                )}
               </label>
             );
           });
         })()}
+        {loading && stats.length === 0 && (
+          <div className="p-6 text-center text-gray-500 text-xs inline-flex items-center justify-center gap-2 w-full">
+            <Loader2 size={12} className="animate-spin text-cyan-400" />
+            패널 데이터 불러오는 중...
+          </div>
+        )}
+        {!loading && stats.length === 0 && (
+          <div className="p-6 text-center text-gray-500 text-xs">
+            표시할 값이 없습니다
+          </div>
+        )}
         {stats.length > 0 && filtered.length === 0 && (
           <div className="p-3 text-center text-gray-500">일치하는 값이 없습니다</div>
         )}
       </div>
+      {historyCampaign && brand && (
+        <CampaignHistoryPopup
+          brand={brand}
+          campaign={historyCampaign}
+          nickname={nicknames?.[historyCampaign]}
+          onClose={() => setHistoryCampaign(null)}
+        />
+      )}
     </div>
   );
 }
@@ -953,6 +1042,151 @@ function fmtMoneyShort(n: number): string {
   if (abs >= 1_000_000) return "$" + (n / 1_000_000).toFixed(1) + "M";
   if (abs >= 1_000) return "$" + (n / 1_000).toFixed(1) + "K";
   return "$" + n.toFixed(0);
+}
+
+interface HistoryEntry {
+  id: string;
+  campaign_name: string | null;
+  entry_date: string;
+  note: string;
+  screenshots: string[];
+}
+
+/** Read-only popup that lists 수정일지 entries for a single campaign under
+ *  a brand. Shown when the user clicks the file-text icon in the right
+ *  panel of the campaign chart. */
+function CampaignHistoryPopup({
+  brand,
+  campaign,
+  nickname,
+  onClose,
+}: {
+  brand: string;
+  campaign: string;
+  nickname?: string;
+  onClose: () => void;
+}) {
+  const [entries, setEntries] = useState<HistoryEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const abort = new AbortController();
+    setLoading(true);
+    fetch(`/api/brands/${encodeURIComponent(brand)}/history`, {
+      signal: abort.signal,
+    })
+      .then((r) => r.json())
+      .then((j) => {
+        const all = (j.entries ?? []) as HistoryEntry[];
+        const mine = all.filter((e) => e.campaign_name === campaign);
+        mine.sort((a, b) =>
+          a.entry_date < b.entry_date ? 1 : a.entry_date > b.entry_date ? -1 : 0,
+        );
+        setEntries(mine);
+      })
+      .catch((e) => {
+        if ((e as Error).name === "AbortError") return;
+        setError(e instanceof Error ? e.message : "로드 실패");
+      })
+      .finally(() => setLoading(false));
+    return () => abort.abort();
+  }, [brand, campaign]);
+
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const h = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", h);
+    return () => {
+      document.removeEventListener("keydown", h);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4">
+      <div
+        onClick={onClose}
+        className="absolute inset-0 bg-slate-950/75 backdrop-blur-sm"
+      />
+      <div className="relative w-full max-w-3xl max-h-[85vh] flex flex-col rounded-lg border border-purple-500/30 bg-slate-900 shadow-2xl shadow-cyan-500/10">
+        <div className="px-5 py-3 border-b border-purple-500/20 flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-xs text-gray-500 uppercase tracking-wide">
+              수정일지 — {brand}
+            </div>
+            <div className="text-base font-semibold text-gray-100 mt-0.5 truncate" title={campaign}>
+              {nickname ? (
+                <>
+                  <span className="text-cyan-300">{nickname}</span>{" "}
+                  <span className="text-gray-500 font-mono text-xs">{campaign}</span>
+                </>
+              ) : (
+                <span className="font-mono">{campaign}</span>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-md text-gray-400 hover:text-rose-300 hover:bg-white/5"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="p-5 flex-1 overflow-auto space-y-3">
+          {loading ? (
+            <div className="flex items-center gap-2 p-6 text-sm text-gray-500">
+              <Loader2 size={14} className="animate-spin text-cyan-400" /> 불러오는 중...
+            </div>
+          ) : error ? (
+            <div className="p-3 rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-300 text-sm">
+              {error}
+            </div>
+          ) : entries.length === 0 ? (
+            <div className="p-8 text-center text-sm text-gray-500">
+              이 캠페인의 수정일지 기록이 없습니다.
+            </div>
+          ) : (
+            entries.map((e) => (
+              <div
+                key={e.id}
+                className="p-3 rounded-md border border-purple-500/20 bg-slate-900/60 space-y-2"
+              >
+                <div className="text-xs text-cyan-300 font-mono">{e.entry_date}</div>
+                <p className="text-sm text-gray-200 whitespace-pre-wrap">
+                  {e.note || <span className="italic text-gray-500">(내용 없음)</span>}
+                </p>
+                {e.screenshots && e.screenshots.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {e.screenshots.map((url) => (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <a
+                        key={url}
+                        href={url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <img
+                          src={url}
+                          alt=""
+                          className="h-24 w-auto rounded-md border border-purple-500/20 object-cover hover:border-cyan-500/50 transition-colors"
+                        />
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
 }
 
 function Field(props: { label: string; children: React.ReactNode }) {

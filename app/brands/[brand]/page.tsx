@@ -94,15 +94,30 @@ export default function BrandDetailPage() {
   }, [brand]);
 
   // A brand can have a "search term" report (has `search_term` column) and/or
-  // a "target keyword" report (has `target_value` column). Identify each.
-  const searchType = useMemo(
-    () => types.find((t) => t.columns.some((c) => c.column_name === "search_term")),
-    [types],
-  );
-  const targetType = useMemo(
-    () => types.find((t) => t.columns.some((c) => c.column_name === "target_value")),
-    [types],
-  );
+  // a "target keyword" report (has `target_value` column). Identify each —
+  // crucially preferring the small pre-aggregated kind tables (sp_search_term
+  // / sp_target_keyword, ~500k rows) over sp_raw (~10M+ rows) which also
+  // happens to carry both columns. Picking the raw table here previously
+  // pushed every chart/distinct query onto a 100x larger table, making
+  // dashboards crawl.
+  const searchType = useMemo(() => {
+    const preferred = types.find((t) => t.type.kind === "sp_search_term");
+    if (preferred) return preferred;
+    return types.find(
+      (t) =>
+        t.type.kind !== "sp_raw" &&
+        t.columns.some((c) => c.column_name === "search_term"),
+    );
+  }, [types]);
+  const targetType = useMemo(() => {
+    const preferred = types.find((t) => t.type.kind === "sp_target_keyword");
+    if (preferred) return preferred;
+    return types.find(
+      (t) =>
+        t.type.kind !== "sp_raw" &&
+        t.columns.some((c) => c.column_name === "target_value"),
+    );
+  }, [types]);
 
   // Each report_type gets its own FilterState (date column + dimensions differ
   // per table). We sync date range across them below so the dashboards stay
@@ -656,6 +671,7 @@ export default function BrandDetailPage() {
               initialConfig={chartInitial}
               onConfigChange={setChartConfig}
               nicknames={nicknames}
+              brand={brand}
             />
           )}
 

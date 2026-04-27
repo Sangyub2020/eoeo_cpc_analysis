@@ -74,8 +74,10 @@ export async function GET(
     dateColByType.set(t.id, dc?.column_name ?? null);
   }
 
-  // For each upload, fetch its slice of stats from the destination table.
-  // Index on (upload_id) keeps these queries cheap regardless of total size.
+  // For each type, run ONE GROUP-BY-upload_id query that returns stats for
+  // every upload at once. Per-upload queries used to time out under load
+  // (heavy parallel UPSERTs into sp_raw kept this endpoint waiting for
+  // index locks). One scan per type is bounded and uses the upload_id index.
   const result: TypeWithUploads[] = await Promise.all(
     types.map(async (t) => {
       const uploadsForType = (uploads ?? []).filter(
@@ -90,48 +92,70 @@ export async function GET(
           display_name: t.display_name,
           table_name: t.table_name,
           kind: t.kind,
-          uploads: [],
+          uploads: uploadsForType.map((u) => ({
+            id: u.id,
+            file_name: u.file_name ?? "",
+            uploaded_at: u.uploaded_at,
+            row_count: u.row_count ?? 0,
+            db_row_count: 0,
+            min_date: null,
+            max_date: null,
+          })),
         };
       }
-      const dateCol = dateColByType.get(t.id);
-      const dateSelect =
-        dateCol != null
-          ? `, min(${q(dateCol)})::text as min_date, max(${q(dateCol)})::text as max_date`
-          : ", null::text as min_date, null::text as max_date";
 
-      const enrichedUploads: UploadInfo[] = await Promise.all(
-        uploadsForType.map(async (u) => {
-          try {
-            const rows = await execQueryLong<{
-              n: number;
-              min_date: string | null;
-              max_date: string | null;
-            }>(
-              `select count(*)::int as n${dateSelect} from public.${q(t.table_name)} where upload_id = ${sqlLit(u.id)}`,
-            );
-            const r = rows[0] ?? { n: 0, min_date: null, max_date: null };
-            return {
-              id: u.id,
-              file_name: u.file_name ?? "",
-              uploaded_at: u.uploaded_at,
-              row_count: u.row_count ?? 0,
-              db_row_count: Number(r.n ?? 0),
+      // Default: every upload reports zeros until the GROUP BY query fills
+      // them in. Important — even if the stats query fails (timeout, etc.)
+      // we still return the upload list so the UI never goes blank.
+      const stats = new Map<
+        string,
+        { n: number; min_date: string | null; max_date: string | null }
+      >();
+
+      if (uploadsForType.length > 0) {
+        const dateCol = dateColByType.get(t.id);
+        const dateSelect =
+          dateCol != null
+            ? `, min(${q(dateCol)})::text as min_date, max(${q(dateCol)})::text as max_date`
+            : ", null::text as min_date, null::text as max_date";
+        const ids = uploadsForType
+          .map((u) => `${sqlLit(u.id)}::uuid`)
+          .join(", ");
+        const sql = `select upload_id::text as upload_id, count(*)::int as n${dateSelect}
+          from public.${q(t.table_name)}
+          where upload_id in (${ids})
+          group by upload_id`;
+        try {
+          const rows = await execQueryLong<{
+            upload_id: string;
+            n: number;
+            min_date: string | null;
+            max_date: string | null;
+          }>(sql);
+          for (const r of rows) {
+            stats.set(r.upload_id, {
+              n: Number(r.n ?? 0),
               min_date: r.min_date ? r.min_date.slice(0, 10) : null,
               max_date: r.max_date ? r.max_date.slice(0, 10) : null,
-            };
-          } catch {
-            return {
-              id: u.id,
-              file_name: u.file_name ?? "",
-              uploaded_at: u.uploaded_at,
-              row_count: u.row_count ?? 0,
-              db_row_count: 0,
-              min_date: null,
-              max_date: null,
-            };
+            });
           }
-        }),
-      );
+        } catch {
+          // ignore — uploads list still returns with zero stats
+        }
+      }
+
+      const enrichedUploads: UploadInfo[] = uploadsForType.map((u) => {
+        const s = stats.get(u.id);
+        return {
+          id: u.id,
+          file_name: u.file_name ?? "",
+          uploaded_at: u.uploaded_at,
+          row_count: u.row_count ?? 0,
+          db_row_count: s?.n ?? 0,
+          min_date: s?.min_date ?? null,
+          max_date: s?.max_date ?? null,
+        };
+      });
 
       return {
         type_id: t.id,

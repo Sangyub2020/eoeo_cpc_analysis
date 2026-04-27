@@ -12,6 +12,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { Loader2, Search, ArrowUp, ArrowDown, ArrowUpDown, Crosshair } from "lucide-react";
+import AsinLinkified from "@/components/reports/AsinLinkified";
 import type { FilterState } from "@/lib/reports/filter";
 import type { ReportColumn } from "@/lib/reports/types";
 import { fmtShortDate } from "@/lib/reports/format";
@@ -611,7 +612,7 @@ export function TermPanel({
                 title={`${t.value}\n우클릭: 복사`}
                 onContextMenu={(e) => copyValue(e, t.value)}
               >
-                {t.value}
+                <AsinLinkified text={t.value} />
               </span>
               {copiedValue === t.value && (
                 <span className="text-[10px] text-emerald-300 shrink-0 animate-pulse">

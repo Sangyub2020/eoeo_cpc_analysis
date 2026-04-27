@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { X, Loader2, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import AsinLinkified from "@/components/reports/AsinLinkified";
 import type { FilterState } from "@/lib/reports/filter";
 
 interface DrillRow {
@@ -198,7 +199,11 @@ export default function DrillDownModal({
                     className="border-b border-purple-500/10 hover:bg-white/5"
                   >
                     <td className="py-1.5 pr-2 text-gray-200 font-mono text-[11px] max-w-[320px] truncate" title={r.value ?? ""}>
-                      {r.value ?? <span className="italic text-gray-500">(null)</span>}
+                      {r.value != null ? (
+                        <AsinLinkified text={r.value} />
+                      ) : (
+                        <span className="italic text-gray-500">(null)</span>
+                      )}
                     </td>
                     <td className="py-1.5 pr-2">
                       <MatchTypeBadge value={r.match_type} />
