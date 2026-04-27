@@ -2,22 +2,19 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 /**
- * Auth gate. Two ways in:
+ * Auth gate. Google OAuth via Supabase Auth — the only way in. The user
+ * signs in on /login, Supabase issues an `sb-…-auth-token` cookie, and
+ * this middleware sees the session via @supabase/ssr.
  *
- *  1. Google OAuth via Supabase Auth — primary. The user signs in on
- *     /login, Supabase issues an `sb-…-auth-token` cookie, and this
- *     middleware sees the session via @supabase/ssr.
- *  2. Legacy shared-passcode gate (`APP_PASSCODE` env var). Kept as a
- *     fallback so the dashboard still works if the Supabase Auth setup
- *     ever breaks. Disabled when the env var is empty.
- *
- * If `ALLOWED_EMAILS` is set (comma-separated list), Supabase sessions
- * whose `user.email` isn't in that list are bounced to /login. Useful for
- * a personal/team dashboard where you don't want every Google account in
- * the world to be allowed in.
+ * `ALLOWED_EMAILS` (comma-separated) restricts who can sign in. Each entry
+ * is matched two ways:
+ *   - Full email: `ksy@egongegong.com` matches that exact address
+ *   - Domain: `@egongegong.com` (or just `egongegong.com`) matches every
+ *     email under that domain
+ * Empty/unset = any signed-in Google account allowed (relying on Supabase's
+ * OAuth client config to limit the audience instead).
  */
-const PASSCODE_COOKIE = "ax-auth";
-const PUBLIC_PATHS = ["/login", "/api/auth", "/auth/callback"];
+const PUBLIC_PATHS = ["/login", "/auth/callback", "/api/auth"];
 
 function isPublic(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + "/"));
@@ -27,11 +24,22 @@ function isAllowedEmail(email: string | null | undefined): boolean {
   const raw = process.env.ALLOWED_EMAILS?.trim();
   if (!raw) return true; // no allowlist configured -> any signed-in Google account
   if (!email) return false;
-  const allowed = raw
-    .split(",")
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean);
-  return allowed.includes(email.toLowerCase());
+  const lower = email.toLowerCase();
+  const at = lower.lastIndexOf("@");
+  const userDomain = at >= 0 ? lower.slice(at + 1) : "";
+
+  for (const entryRaw of raw.split(",")) {
+    const entry = entryRaw.trim().toLowerCase();
+    if (!entry) continue;
+    if (entry.startsWith("@")) {
+      if (userDomain === entry.slice(1)) return true;
+    } else if (!entry.includes("@")) {
+      if (userDomain === entry) return true;
+    } else {
+      if (lower === entry) return true;
+    }
+  }
+  return false;
 }
 
 export async function proxy(req: NextRequest) {
@@ -40,48 +48,37 @@ export async function proxy(req: NextRequest) {
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  const passcodeConfigured = !!process.env.APP_PASSCODE;
 
-  // Both gates disabled -> open access (e.g. local dev with no env vars).
-  if (!supabaseUrl || !supabaseAnon) {
-    if (!passcodeConfigured) return NextResponse.next();
-  }
+  // Auth misconfigured (env vars missing) — open access so the dashboard
+  // doesn't lock the user out before they can fix the deployment.
+  if (!supabaseUrl || !supabaseAnon) return NextResponse.next();
 
   // Build the response we'll mutate so Supabase can refresh tokens via cookies.
   const response = NextResponse.next();
 
-  // Try Supabase session first.
-  if (supabaseUrl && supabaseAnon) {
-    const supabase = createServerClient(supabaseUrl, supabaseAnon, {
-      cookies: {
-        getAll() {
-          return req.cookies.getAll();
-        },
-        setAll(
-          cookiesToSet: { name: string; value: string; options?: CookieOptions }[],
-        ) {
-          for (const { name, value, options } of cookiesToSet) {
-            response.cookies.set(name, value, options);
-          }
-        },
+  const supabase = createServerClient(supabaseUrl, supabaseAnon, {
+    cookies: {
+      getAll() {
+        return req.cookies.getAll();
       },
-    });
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (user && isAllowedEmail(user.email)) {
-      return response;
-    }
-    // Signed in but not in allowlist -> treat as anonymous (will redirect below).
+      setAll(
+        cookiesToSet: { name: string; value: string; options?: CookieOptions }[],
+      ) {
+        for (const { name, value, options } of cookiesToSet) {
+          response.cookies.set(name, value, options);
+        }
+      },
+    },
+  });
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (user && isAllowedEmail(user.email)) {
+    return response;
   }
 
-  // Legacy passcode fallback.
-  if (passcodeConfigured) {
-    const cookie = req.cookies.get(PASSCODE_COOKIE)?.value;
-    if (cookie === "1") return response;
-  }
-
-  // Not authenticated -> bounce to login.
+  // Not authenticated (or signed in but not in allowlist) -> bounce to login.
   const url = req.nextUrl.clone();
   url.pathname = "/login";
   url.searchParams.set("next", pathname);

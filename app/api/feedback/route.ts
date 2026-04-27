@@ -1,9 +1,24 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
 const VALID_STATUSES = new Set(["open", "in_progress", "done", "wontfix"]);
+
+/** Resolve the signed-in user's email — used as both `nickname` (display)
+ *  and `author_email` (ownership) on a new post. Null when no session. */
+async function getRequesterEmail(): Promise<string | null> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    return user?.email ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /** List all feedback posts, newest first. */
 export async function GET() {
@@ -15,33 +30,30 @@ export async function GET() {
   return NextResponse.json({ posts: data ?? [] });
 }
 
-/** Create a new feedback post. Nickname + note are required. */
+/** Create a new feedback post. Author is the signed-in user — nickname
+ *  field on the body is ignored, the post is always tagged with the
+ *  authenticated email. */
 export async function POST(req: Request) {
-  let body: {
-    nickname?: string;
-    note?: string;
-    screenshots?: string[];
-    status?: string;
-  };
+  const email = await getRequesterEmail();
+  if (!email) {
+    return NextResponse.json({ error: "로그인이 필요합니다" }, { status: 401 });
+  }
+
+  let body: { note?: string; screenshots?: string[]; status?: string };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "invalid json" }, { status: 400 });
   }
-  const nickname = (body.nickname ?? "").trim();
   const note = (body.note ?? "").trim();
-  if (!nickname) {
-    return NextResponse.json({ error: "nickname required" }, { status: 400 });
-  }
-  if (!note) {
-    return NextResponse.json({ error: "note required" }, { status: 400 });
-  }
+  if (!note) return NextResponse.json({ error: "note required" }, { status: 400 });
   const status = body.status && VALID_STATUSES.has(body.status) ? body.status : "open";
 
   const { data, error } = await getSupabaseAdmin()
     .from("feedback_posts")
     .insert({
-      nickname,
+      nickname: email,
+      author_email: email,
       note,
       screenshots: Array.isArray(body.screenshots) ? body.screenshots : [],
       status,
