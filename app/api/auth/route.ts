@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export async function POST(req: Request) {
   const { passcode } = (await req.json().catch(() => ({}))) as { passcode?: string };
@@ -20,7 +21,18 @@ export async function POST(req: Request) {
   return res;
 }
 
+/**
+ * Sign out — clears both the legacy passcode cookie and the Supabase Auth
+ * session so the user goes back to a clean login page regardless of which
+ * gate let them in.
+ */
 export async function DELETE() {
+  try {
+    const supabase = await createSupabaseServerClient();
+    await supabase.auth.signOut();
+  } catch {
+    // ignore — we still clear the passcode cookie below
+  }
   const res = NextResponse.json({ ok: true });
   res.cookies.set("ax-auth", "", { path: "/", maxAge: 0 });
   return res;

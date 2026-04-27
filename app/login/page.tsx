@@ -9,7 +9,7 @@ export default function LoginPage() {
       <h1 className="text-3xl font-bold bg-gradient-to-r from-cyan-400 to-purple-400 bg-clip-text text-transparent mb-2">
         로그인
       </h1>
-      <p className="text-gray-400 mb-6">팀 공용 패스코드를 입력해주세요.</p>
+      <p className="text-gray-400 mb-6">Google 계정으로 로그인하거나 공용 패스코드를 입력해주세요.</p>
       <Suspense>
         <LoginForm />
       </Suspense>

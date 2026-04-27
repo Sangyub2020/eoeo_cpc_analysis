@@ -1,76 +1,80 @@
 "use client";
 
-import { Fragment, useMemo } from "react";
+import { useMemo } from "react";
 
 /**
- * ASIN: starts with "B0" + 8 uppercase alphanumeric chars. The negative
- * look-behind/ahead ensures we don't pick up partial matches from longer
- * runs of alphanumerics — `AB0DDC3QGJLX` shouldn't link, but
- * `_B0DDC3QGJL_` should.
+ * Linkifies an Amazon ASIN at the START of a value cell.
+ *
+ * Matches (case-insensitively):
+ *  - the cell starts with `asin=B0XXXXXXXX` — links just the ASIN part
+ *  - the cell starts with `B0XXXXXXXX`     — links the ASIN
+ *
+ * Leading whitespace / quote chars (`"` `'` `` ` ``) are tolerated. The ASIN
+ * portion is `B0` + 8 alphanumerics, NOT followed by another alphanumeric
+ * (so `B0XXXXXXXX1` — 11 chars — doesn't match).
+ *
+ * Anything that doesn't start with one of the two patterns is rendered as
+ * plain text — e.g. `SP_Conversion_B0DDC3QGJL_KT_Core` is left alone, since
+ * the ASIN is embedded mid-string.
  */
-const ASIN_RE = /(?<![A-Z0-9])B0[A-Z0-9]{8}(?![A-Z0-9])/g;
-
 interface Props {
   text: string;
   className?: string;
   linkClassName?: string;
 }
 
-/**
- * Renders a string and turns any embedded Amazon ASIN tokens into hyperlinks
- * to `https://www.amazon.com/dp/<ASIN>` that open in a new tab. Click bubbles
- * are stopped so wrappers like `<label>` don't toggle their checkbox when
- * the user clicks the link.
- */
+interface Match {
+  asin: string; // upper-cased canonical form, used for the URL
+  start: number; // index in text where the visible ASIN starts
+  end: number; // exclusive end index
+}
+
+const PREFIX_RE = /^[\s"'`]*(asin=)?/i;
+const ASIN_AT_START_RE = /^B0[A-Z0-9]{8}(?![A-Z0-9])/i;
+
+function findAsinAtStart(text: string): Match | null {
+  if (!text) return null;
+  const prefixMatch = text.match(PREFIX_RE);
+  const offset = prefixMatch ? prefixMatch[0].length : 0;
+  const rest = text.slice(offset);
+  const asinMatch = rest.match(ASIN_AT_START_RE);
+  if (!asinMatch) return null;
+  return {
+    asin: asinMatch[0].toUpperCase(),
+    start: offset,
+    end: offset + asinMatch[0].length,
+  };
+}
+
 export default function AsinLinkified({
   text,
   className,
   linkClassName,
 }: Props) {
-  const parts = useMemo(() => splitOnAsins(text), [text]);
-  if (parts.length === 1 && typeof parts[0] === "string") {
+  const match = useMemo(() => findAsinAtStart(text), [text]);
+  if (!match) {
     return <span className={className}>{text}</span>;
   }
+  const before = text.slice(0, match.start);
+  const visible = text.slice(match.start, match.end);
+  const after = text.slice(match.end);
   return (
     <span className={className}>
-      {parts.map((p, i) =>
-        typeof p === "string" ? (
-          <Fragment key={i}>{p}</Fragment>
-        ) : (
-          <a
-            key={i}
-            href={`https://www.amazon.com/dp/${p.asin}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className={
-              linkClassName ??
-              "text-cyan-300 hover:text-cyan-200 hover:underline underline-offset-2"
-            }
-            title={`Amazon: ${p.asin}`}
-          >
-            {p.asin}
-          </a>
-        ),
-      )}
+      {before}
+      <a
+        href={`https://www.amazon.com/dp/${match.asin}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        className={
+          linkClassName ??
+          "text-cyan-300 hover:text-cyan-200 hover:underline underline-offset-2"
+        }
+        title={`Amazon: ${match.asin}`}
+      >
+        {visible}
+      </a>
+      {after}
     </span>
   );
-}
-
-type Part = string | { asin: string };
-
-function splitOnAsins(text: string): Part[] {
-  if (!text) return [""];
-  const out: Part[] = [];
-  let last = 0;
-  // Reset the regex so repeated calls on the same string don't share state.
-  ASIN_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = ASIN_RE.exec(text)) !== null) {
-    if (m.index > last) out.push(text.slice(last, m.index));
-    out.push({ asin: m[0] });
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) out.push(text.slice(last));
-  return out.length === 0 ? [text] : out;
 }
