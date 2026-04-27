@@ -573,13 +573,19 @@ export default function BrandDetailPage() {
             )}
           </div>
         </div>
-        <Link
-          href={`/upload?continue=1&brand=${encodeURIComponent(brand)}`}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-cyan-500/40 bg-cyan-500/10 text-sm text-cyan-200 hover:bg-cyan-500/20 hover:border-cyan-500/60 whitespace-nowrap"
-          title="현재까지 업로드된 시점 이후 데이터만 추가합니다"
-        >
-          <Upload size={14} /> 이어서 업로드
-        </Link>
+        <div className="flex flex-col items-end gap-1">
+          <Link
+            href={`/upload?continue=1&brand=${encodeURIComponent(brand)}`}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-cyan-500/40 bg-cyan-500/10 text-sm text-cyan-200 hover:bg-cyan-500/20 hover:border-cyan-500/60 whitespace-nowrap"
+            title="현재까지 업로드된 시점 이후 데이터만 추가합니다"
+          >
+            <Upload size={14} /> 이어서 업로드
+          </Link>
+          <span className="text-[11px] text-gray-500 text-right max-w-[280px] leading-snug">
+            전체 파일 말고 이전 파일 이후 데이터만 올려도 괜찮아요. 같은 키는
+            자동으로 덮어쓰니 중복 걱정 안 하셔도 됩니다.
+          </span>
+        </div>
       </div>
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>

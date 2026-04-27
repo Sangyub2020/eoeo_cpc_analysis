@@ -16,10 +16,18 @@ export default function LoginForm() {
     setError(null);
     try {
       const supabase = createSupabaseBrowserClient();
-      const redirectTo =
-        typeof window !== "undefined"
-          ? `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`
-          : "/auth/callback";
+      // Prefer the explicit NEXT_PUBLIC_SITE_URL so a developer running
+      // localhost can never accidentally end up on the production app
+      // after Google OAuth (which would happen if Supabase falls back
+      // to its dashboard-configured Site URL).
+      const baseUrl =
+        process.env.NEXT_PUBLIC_SITE_URL ||
+        (typeof window !== "undefined" ? window.location.origin : "");
+      const redirectTo = `${baseUrl}/auth/callback?next=${encodeURIComponent(next)}`;
+      // Surface the redirectTo we're sending so the developer can verify
+      // it matches a Supabase Redirect URL entry. Removed once stable.
+      // eslint-disable-next-line no-console
+      console.log("[google-oauth] redirectTo =", redirectTo);
       const { error: oauthErr } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: { redirectTo },

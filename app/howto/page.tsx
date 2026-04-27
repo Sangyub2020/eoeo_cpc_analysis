@@ -54,46 +54,56 @@ export default function HowToPage() {
         </h2>
         <p className="text-sm text-gray-300 leading-relaxed">
           Amazon Advertising Console → Reports → Sponsored Products 에서{" "}
-          <strong>두 가지</strong> 보고서를 받아옵니다:
+          <strong>세 가지</strong> 보고서를 받아옵니다. 각 보고서는{" "}
+          <span className="text-gray-400">Dimensions</span> (그룹핑 기준) +{" "}
+          <span className="text-gray-400">Metrics</span> (수치 지표) 로
+          구성됩니다.
         </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div className="p-3 rounded border border-purple-500/30 bg-slate-900/50">
-            <div className="text-sm font-semibold text-cyan-300">
-              SP 검색어 레포트
-            </div>
-            <div className="text-xs text-gray-400 mt-1">
-              Search term report
-            </div>
-            <div className="text-[11px] text-gray-500 mt-2 leading-relaxed">
-              필요한 컬럼: Date, Campaign name, Campaign ID, Customer search
-              term (또는 Search term / Matched target), Impressions, Clicks
-              (또는 Gross clicks), Total cost, Sales
-            </div>
-          </div>
-          <div className="p-3 rounded border border-purple-500/30 bg-slate-900/50">
-            <div className="text-sm font-semibold text-cyan-300">
-              SP 타겟 키워드 레포트
-            </div>
-            <div className="text-xs text-gray-400 mt-1">
-              Targeting report
-            </div>
-            <div className="text-[11px] text-gray-500 mt-2 leading-relaxed">
-              필요한 컬럼: Date, Campaign name, Campaign ID, Target value (또는
-              Target), Target match type, Impressions, Clicks, Total cost,
-              Sales
-            </div>
-          </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <ReportCard
+            title="SP 검색어 레포트"
+            subtitle="Search term report"
+            dimensions={[
+              "Date",
+              "Campaign name",
+              "Search term",
+              "Budget currency",
+            ]}
+            metrics={["Impressions", "Clicks", "Total cost", "Sales"]}
+          />
+          <ReportCard
+            title="SP 타겟 키워드 레포트"
+            subtitle="Targeting report"
+            dimensions={[
+              "Date",
+              "Campaign name",
+              "Target value",
+              "Target match type",
+              "Budget currency",
+            ]}
+            metrics={["Impressions", "Clicks", "Total cost", "Sales"]}
+          />
+          <ReportCard
+            title="SP 원본 (드릴다운용)"
+            subtitle="Search term report — full raw"
+            dimensions={[
+              "Date",
+              "Campaign name",
+              "Target value",
+              "Target match type",
+              "Search term",
+              "Budget currency",
+            ]}
+            metrics={["Impressions", "Clicks", "Total cost", "Sales"]}
+            note="가장 용량 큰 파일. 검색어 ↔ 타겟 cross-drill 조회용."
+          />
         </div>
+
         <p className="text-xs text-gray-500 leading-relaxed">
-          ⚠️ 두 종류 모두 받으세요. <strong>한 종류만 올리면 그 쪽 차트만</strong>{" "}
-          보여요. 컬럼 이름이 살짝 달라도 (예: Clicks vs Gross clicks) 자동으로
+          ⚠️ <strong>세 종류 모두 올리세요</strong>. 빠뜨리면 해당 분석 화면이
+          비어 보입니다. Amazon 의 헤더 이름이 살짝 달라도 시스템이 자동으로
           맞춰주니 그대로 올리면 됩니다.
-        </p>
-        <p className="text-xs text-gray-500 leading-relaxed">
-          💡 추가로 (선택) <strong>SP 원본 (드릴다운용)</strong> 보고서를
-          올리면 "이 검색어가 어떤 타겟과 매칭됐나?" 같은 상세 조회가 가능해요.
-          가장 큰 파일 (Amazon 의 Search term report 의 raw form) — 없어도
-          기본 대시보드는 잘 작동합니다.
         </p>
       </section>
 
@@ -113,8 +123,8 @@ export default function HowToPage() {
             여러 개 한꺼번에 드래그도 OK
           </li>
           <li>
-            <strong>레포트 종류</strong> 선택: 방금 받은 게 검색어 보고서인지
-            타겟 키워드 보고서인지에 맞게 두 개 중 하나 클릭
+            <strong>레포트 종류</strong> 선택: 방금 받은 게 검색어 / 타겟
+            키워드 / 원본 중 무엇인지에 맞게 세 개 중 하나 클릭
           </li>
           <li>
             <strong>브랜드 분류</strong> 화면 — 자동 매칭이 안 된 캠페인이
@@ -190,6 +200,51 @@ export default function HowToPage() {
         끝. 처음 한 번만 브랜드 만들고, 그 다음부터는 매주{" "}
         <strong>다운로드 → 업로드 → 본다</strong> 만 하면 돼요.
       </div>
+    </div>
+  );
+}
+
+/** Single report-type card with separate Dimensions / Metrics blocks. */
+function ReportCard({
+  title,
+  subtitle,
+  dimensions,
+  metrics,
+  note,
+}: {
+  title: string;
+  subtitle: string;
+  dimensions: string[];
+  metrics: string[];
+  note?: string;
+}) {
+  return (
+    <div className="p-3 rounded border border-purple-500/30 bg-slate-900/50 space-y-2">
+      <div>
+        <div className="text-sm font-semibold text-cyan-300">{title}</div>
+        <div className="text-[10px] text-gray-500 mt-0.5">{subtitle}</div>
+      </div>
+      <div>
+        <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">
+          Dimensions
+        </div>
+        <ul className="text-[11px] text-gray-300 space-y-0.5 list-disc list-inside leading-snug">
+          {dimensions.map((d) => (
+            <li key={d}>{d}</li>
+          ))}
+        </ul>
+      </div>
+      <div>
+        <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">
+          Metrics
+        </div>
+        <ul className="text-[11px] text-gray-300 space-y-0.5 list-disc list-inside leading-snug">
+          {metrics.map((m) => (
+            <li key={m}>{m}</li>
+          ))}
+        </ul>
+      </div>
+      {note && <div className="text-[10px] text-amber-300/80 italic">{note}</div>}
     </div>
   );
 }
