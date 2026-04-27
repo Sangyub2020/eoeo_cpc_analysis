@@ -410,8 +410,12 @@ function UploadPage() {
         return;
       }
       kindSlug = selectedKind;
-      const sample = existingTypes.find((t) => t.kind === kindSlug);
-      kindDisplay = sample?.display_name?.split("·")[0]?.trim() ?? kindSlug;
+      // Resolve from the schema catalog. Reading another brand's
+      // display_name would re-use that brand's prefix here (e.g.
+      // "KAHI · Search Term Report".split("·")[0] → "KAHI"), and the new
+      // type would end up named "<NEW BRAND> · KAHI".
+      const schema = ALL_KINDS.find((k) => k.slug === kindSlug);
+      kindDisplay = schema?.display_name ?? kindSlug;
     }
 
     setStep("committing");
