@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import { Loader2, Search, ArrowUp, ArrowDown, ArrowUpDown, Crosshair } from "lucide-react";
 import AsinLinkified from "@/components/reports/AsinLinkified";
+import CumulativeDistributionModal from "@/components/reports/CumulativeDistributionModal";
 import type { FilterState } from "@/lib/reports/filter";
 import type { ReportColumn } from "@/lib/reports/types";
 import { fmtShortDate } from "@/lib/reports/format";
@@ -78,6 +79,7 @@ export default function ContributionChart({
   >(new Map());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showDistribution, setShowDistribution] = useState(false);
 
   const baseFilter = useMemo(() => {
     const dims = Object.fromEntries(
@@ -259,12 +261,30 @@ export default function ContributionChart({
           <span className="text-gray-400">개</span>
         </div>
         <div className="flex-1" />
-        <div className="text-xs text-gray-400">
+        <button
+          type="button"
+          onClick={() => setShowDistribution(true)}
+          className="text-xs text-gray-400 hover:text-cyan-200 transition cursor-pointer underline-offset-2 decoration-dotted decoration-cyan-500/40 hover:underline"
+          title={`전체 ${stackLabel} 매출 분포 보기 (long-tail / 집중도)`}
+        >
           Top {sharedTerms.length} {metricLabel} 합계:{" "}
           <span className="text-cyan-300 font-semibold tabular-nums">{fmtTotal(totalSum)}</span>
           {busy && <Loader2 size={10} className="inline ml-2 animate-spin text-cyan-400" />}
-        </div>
+        </button>
       </div>
+
+      {showDistribution && (
+        <CumulativeDistributionModal
+          slug={slug}
+          column={STACK_COL}
+          metric={{ col: METRIC_COL, fn: METRIC_FN }}
+          filter={filter}
+          topN={topN}
+          stackLabel={stackLabel}
+          metricLabel={metricLabel}
+          onClose={() => setShowDistribution(false)}
+        />
+      )}
 
       <div className="flex gap-3 h-[520px]">
         <div className="flex-1 h-full relative min-w-0">
