@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, Loader2, FolderOpen, BarChart3, History, Tag, Upload } from "lucide-react";
 import ChartBuilder, { type ChartConfigSnapshot } from "@/components/reports/ChartBuilder";
+import BrandSummaryChart from "@/components/reports/BrandSummaryChart";
 import ContributionChart from "@/components/reports/ContributionChart";
 import RoasChart from "@/components/reports/RoasChart";
 import DrillDownModal from "@/components/reports/DrillDownModal";
@@ -666,7 +667,13 @@ export default function BrandDetailPage() {
               search_term / campaign_name dimensions). Its filter changes are
               mirrored into the target-value filter for any shared dimension
               (campaign_name, date) so the Target value section obeys the same
-              campaign/period selection. */}
+              campaign/period selection.
+              The brand-wide summary chart is slotted between the controls and
+              the campaign chart so it sits directly above 캠페인 단위 차트.
+              It mirrors the ChartBuilder's kind/X/Y/log/overlay but ignores
+              group dimension and per-dimension filters — only 공통 기간 applies.
+              ROAS 일간 추이 toggle (default off) appears when both Sales(sum)
+              and Total cost(sum) are active Y axes. */}
           {primary && (
             <ChartBuilder
               key={chartKey}
@@ -678,6 +685,16 @@ export default function BrandDetailPage() {
               onConfigChange={setChartConfig}
               nicknames={nicknames}
               brand={brand}
+              slotBeforeChart={
+                <BrandSummaryChart
+                  slug={primary.type.slug}
+                  columns={primary.columns}
+                  dateColumn={primaryFilter.dateColumn}
+                  dateFrom={primaryFilter.dateFrom}
+                  dateTo={primaryFilter.dateTo}
+                  config={chartConfig}
+                />
+              }
             />
           )}
 

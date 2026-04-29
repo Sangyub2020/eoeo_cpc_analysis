@@ -53,6 +53,10 @@ interface Props {
   /** Brand context — passed through to the right-panel so the per-campaign
    *  history (수정일지) popup can fetch entries for this brand only. */
   brand?: string;
+  /** Optional content rendered between the controls panel and the chart
+   *  panel — used by the brand page to slot the brand-wide summary chart
+   *  directly above the campaign chart. */
+  slotBeforeChart?: React.ReactNode;
 }
 
 export interface ChartConfigSnapshot {
@@ -61,6 +65,7 @@ export interface ChartConfigSnapshot {
   yCols: { col: string; fn: AggFn; axis: Axis; enabled?: boolean }[];
   groupCol: string;
   showWeeklyAvg?: boolean;
+  logScale?: boolean;
 }
 
 type YCol = { col: string; fn: AggFn; axis: Axis; enabled: boolean };
@@ -86,7 +91,7 @@ interface BucketInfo {
   roas: number | null;
 }
 
-export default function ChartBuilder({ slug, columns, filter, setFilter, initialConfig, onConfigChange, nicknames, brand }: Props) {
+export default function ChartBuilder({ slug, columns, filter, setFilter, initialConfig, onConfigChange, nicknames, brand, slotBeforeChart }: Props) {
   const numericCols = columns.filter(
     (c) => c.data_type === "numeric" || c.data_type === "integer",
   );
@@ -146,9 +151,9 @@ export default function ChartBuilder({ slug, columns, filter, setFilter, initial
   >([]);
 
   useEffect(() => {
-    onConfigChange?.({ kind, xCol, yCols, groupCol, showWeeklyAvg });
+    onConfigChange?.({ kind, xCol, yCols, groupCol, showWeeklyAvg, logScale });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind, xCol, yCols, groupCol, showWeeklyAvg]);
+  }, [kind, xCol, yCols, groupCol, showWeeklyAvg, logScale]);
 
   // Fetch per-group stats (Cost + Sales, ordered by cost desc). Runs when the group
   // column or the filter (excluding this column) changes.
@@ -561,6 +566,8 @@ export default function ChartBuilder({ slug, columns, filter, setFilter, initial
           )}
         </div>
       </div>
+
+      {slotBeforeChart}
 
       <div className="p-4 rounded-lg border border-purple-500/20 bg-slate-800/40 backdrop-blur-xl shadow-lg shadow-purple-500/10 text-gray-300 lg:-mr-[100px]">
         {/* Selected-values title — shows what's currently being plotted as series */}
