@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { isAdminEmail } from "@/lib/auth/admin";
 
 export const runtime = "nodejs";
 
@@ -18,9 +19,8 @@ async function getRequesterEmail(): Promise<string | null> {
   }
 }
 
-/** Verify the signed-in user is the post's author. Returns the existing
- *  post on success, or a NextResponse error to bubble up. */
-async function authorizeOwner(id: string) {
+/** Look up the post and identify the requester's relationship to it. */
+async function loadPostAndAuth(id: string) {
   const email = await getRequesterEmail();
   if (!email) {
     return {
@@ -42,18 +42,9 @@ async function authorizeOwner(id: string) {
       err: NextResponse.json({ error: "not found" }, { status: 404 }),
     } as const;
   }
-  // Posts created before author_email existed have null — for safety we
-  // treat them as legacy and refuse to mutate (avoids any signed-in user
-  // overwriting historical content).
-  if (!data.author_email || data.author_email !== email) {
-    return {
-      err: NextResponse.json(
-        { error: "본인이 작성한 글만 수정/삭제할 수 있습니다" },
-        { status: 403 },
-      ),
-    } as const;
-  }
-  return { email, post: data } as const;
+  const isOwner = !!data.author_email && data.author_email === email;
+  const isAdmin = isAdminEmail(email);
+  return { email, post: data, isOwner, isAdmin } as const;
 }
 
 export async function PATCH(
@@ -61,8 +52,9 @@ export async function PATCH(
   ctx: { params: Promise<{ id: string }> },
 ) {
   const { id } = await ctx.params;
-  const auth = await authorizeOwner(id);
+  const auth = await loadPostAndAuth(id);
   if ("err" in auth) return auth.err;
+  const { isOwner, isAdmin } = auth;
 
   let body: { note?: string; screenshots?: string[]; status?: string };
   try {
@@ -71,14 +63,33 @@ export async function PATCH(
     return NextResponse.json({ error: "invalid json" }, { status: 400 });
   }
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
-  // nickname is no longer user-editable — it's always the author's email.
-  if (body.note !== undefined) {
-    const n = String(body.note).trim();
-    if (!n) return NextResponse.json({ error: "note cannot be empty" }, { status: 400 });
-    patch.note = n;
+
+  // Note + screenshots: author-only. Posts with a null author_email are
+  // legacy and can't be edited by anyone (treated as locked).
+  const wantsContentEdit = body.note !== undefined || body.screenshots !== undefined;
+  if (wantsContentEdit) {
+    if (!isOwner) {
+      return NextResponse.json(
+        { error: "본인이 작성한 글만 수정할 수 있습니다" },
+        { status: 403 },
+      );
+    }
+    if (body.note !== undefined) {
+      const n = String(body.note).trim();
+      if (!n) return NextResponse.json({ error: "note cannot be empty" }, { status: 400 });
+      patch.note = n;
+    }
+    if (body.screenshots !== undefined) patch.screenshots = body.screenshots;
   }
-  if (body.screenshots !== undefined) patch.screenshots = body.screenshots;
+
+  // Status: author OR admin. Admins moderate site-wide.
   if (body.status !== undefined) {
+    if (!isOwner && !isAdmin) {
+      return NextResponse.json(
+        { error: "상태는 작성자 또는 관리자만 변경할 수 있습니다" },
+        { status: 403 },
+      );
+    }
     if (!VALID_STATUSES.has(body.status)) {
       return NextResponse.json({ error: `invalid status: ${body.status}` }, { status: 400 });
     }
@@ -100,8 +111,14 @@ export async function DELETE(
   ctx: { params: Promise<{ id: string }> },
 ) {
   const { id } = await ctx.params;
-  const auth = await authorizeOwner(id);
+  const auth = await loadPostAndAuth(id);
   if ("err" in auth) return auth.err;
+  if (!auth.isOwner) {
+    return NextResponse.json(
+      { error: "본인이 작성한 글만 삭제할 수 있습니다" },
+      { status: 403 },
+    );
+  }
 
   const { error } = await getSupabaseAdmin()
     .from("feedback_posts")

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Loader2,
   Plus,
@@ -11,11 +11,13 @@ import {
   Save,
   MessageSquare,
   Check,
+  ChevronDown,
   Send,
 } from "lucide-react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { isAdminEmail } from "@/lib/auth/admin";
 
-type Status = "open" | "done";
+type Status = "open" | "in_progress" | "done";
 
 interface FeedbackPost {
   id: string;
@@ -104,18 +106,23 @@ export default function FeedbackBoard() {
     setRefreshKey((k) => k + 1);
   }
 
-  async function toggleStatus(p: FeedbackPost) {
-    const next: Status = p.status === "done" ? "open" : "done";
+  async function setStatus(p: FeedbackPost, next: Status) {
+    if (next === p.status) return;
     const res = await fetch(`/api/feedback/${p.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ status: next }),
     });
-    if (!res.ok) return;
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      alert(`상태 변경 실패: ${j.error ?? res.status}`);
+      return;
+    }
     setRefreshKey((k) => k + 1);
   }
 
   const openCount = posts.filter((p) => p.status === "open").length;
+  const inProgressCount = posts.filter((p) => p.status === "in_progress").length;
 
   return (
     <div className="space-y-3">
@@ -130,6 +137,11 @@ export default function FeedbackBoard() {
             {openCount > 0 && (
               <span className="ml-2 text-amber-300">
                 접수 {openCount}건 대기중
+              </span>
+            )}
+            {inProgressCount > 0 && (
+              <span className="ml-2 text-cyan-300">
+                진행중 {inProgressCount}건
               </span>
             )}
           </p>
@@ -188,7 +200,7 @@ export default function FeedbackBoard() {
                 myEmail={myEmail}
                 onEdit={() => setEditingId(p.id)}
                 onDelete={() => deletePost(p.id)}
-                onToggleStatus={() => toggleStatus(p)}
+                onSetStatus={(next) => setStatus(p, next)}
               />
             ),
           )}
@@ -207,24 +219,100 @@ function fmtWhen(iso: string): string {
   ).padStart(2, "0")}`;
 }
 
-const STATUS_OPEN_STYLE = "bg-amber-500/15 text-amber-300 border-amber-500/30";
-const STATUS_DONE_STYLE = "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
+const STATUS_STYLES: Record<Status, string> = {
+  open: "bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-amber-500/25",
+  in_progress: "bg-cyan-500/15 text-cyan-300 border-cyan-500/30 hover:bg-cyan-500/25",
+  done: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25",
+};
+const STATUS_LABELS: Record<Status, string> = {
+  open: "접수",
+  in_progress: "진행중",
+  done: "완료",
+};
+
+function StatusBadge({
+  status,
+  canEdit,
+  onChange,
+}: {
+  status: Status;
+  canEdit: boolean;
+  onChange: (next: Status) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const baseClass =
+    "inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full border text-[10px] font-medium uppercase tracking-wide transition-colors";
+
+  if (!canEdit) {
+    return (
+      <span className={`${baseClass} ${STATUS_STYLES[status]}`}>
+        {status === "done" && <Check size={10} />}
+        {STATUS_LABELS[status]}
+      </span>
+    );
+  }
+
+  return (
+    <div ref={rootRef} className="relative inline-block">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        title="상태 변경 (관리자)"
+        className={`${baseClass} cursor-pointer ${STATUS_STYLES[status]}`}
+      >
+        {status === "done" && <Check size={10} />}
+        {STATUS_LABELS[status]}
+        <ChevronDown size={10} className="opacity-70" />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full mt-1 z-20 min-w-[110px] rounded-md border border-purple-500/30 bg-slate-800 shadow-lg shadow-slate-950/40 overflow-hidden">
+          {(["open", "in_progress", "done"] as Status[]).map((s) => (
+            <button
+              key={s}
+              onClick={() => {
+                onChange(s);
+                setOpen(false);
+              }}
+              className={`block w-full text-left px-3 py-1.5 text-xs hover:bg-white/5 ${
+                s === status ? "text-cyan-300 bg-white/5" : "text-gray-200"
+              }`}
+            >
+              {STATUS_LABELS[s]}
+              {s === status && <span className="ml-1 text-[10px]">✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function PostCard({
   post,
   myEmail,
   onEdit,
   onDelete,
-  onToggleStatus,
+  onSetStatus,
 }: {
   post: FeedbackPost;
   myEmail: string | null;
   onEdit: () => void;
   onDelete: () => void;
-  onToggleStatus: () => void;
+  onSetStatus: (next: Status) => void;
 }) {
   const isDone = post.status === "done";
   const isMine = !!myEmail && post.author_email === myEmail;
+  const isAdmin = isAdminEmail(myEmail);
 
   const [comments, setComments] = useState<FeedbackComment[]>([]);
   const [commentsLoading, setCommentsLoading] = useState(false);
@@ -256,14 +344,15 @@ function PostCard({
     setCommentsRefresh((k) => k + 1);
   }
 
+  const cardBorder =
+    post.status === "done"
+      ? "border-emerald-500/20 bg-emerald-500/5"
+      : post.status === "in_progress"
+        ? "border-cyan-500/20 bg-cyan-500/5"
+        : "border-purple-500/20 bg-slate-800/40";
+
   return (
-    <div
-      className={`p-4 rounded-lg border space-y-3 ${
-        isDone
-          ? "border-emerald-500/20 bg-emerald-500/5"
-          : "border-purple-500/20 bg-slate-800/40"
-      }`}
-    >
+    <div className={`p-4 rounded-lg border space-y-3 ${cardBorder}`}>
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2 flex-wrap">
           <span
@@ -273,16 +362,11 @@ function PostCard({
             {post.nickname}
           </span>
           <span className="text-[11px] text-gray-500">{fmtWhen(post.created_at)}</span>
-          <button
-            onClick={onToggleStatus}
-            title={isDone ? "다시 접수로 되돌리기" : "완료로 표시 (개발자용)"}
-            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full border text-[10px] font-medium uppercase tracking-wide transition-colors ${
-              isDone ? STATUS_DONE_STYLE : STATUS_OPEN_STYLE
-            }`}
-          >
-            {isDone && <Check size={10} />}
-            {isDone ? "완료" : "접수"}
-          </button>
+          <StatusBadge
+            status={post.status}
+            canEdit={isAdmin}
+            onChange={onSetStatus}
+          />
         </div>
         {isMine && (
           <div className="flex items-center gap-1">

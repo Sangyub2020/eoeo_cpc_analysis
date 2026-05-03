@@ -18,6 +18,7 @@ import {
   Legend,
   ReferenceArea,
   ResponsiveContainer,
+  Customized,
 } from "recharts";
 import { Loader2 } from "lucide-react";
 import type { ReportColumn } from "@/lib/reports/types";
@@ -442,6 +443,26 @@ function fmtAvgMoney(n: number | null | undefined): string {
   return "$" + Math.round(n).toLocaleString();
 }
 
+/** Estimate half-width (in SVG px) of a bucket-overlay label rendered at
+ *  fontSize 12, fontWeight 700, with a 3px outline stroke. CJK glyphs are
+ *  ~2x ASCII width. Used to clamp the label's x so it never extends past
+ *  the chart's plot area. */
+function estimateBucketLabelHalfWidth(text: string): number {
+  let w = 0;
+  for (const ch of text) {
+    if (
+      /[　-〿㐀-䶿一-鿿가-힯＀-￯]/.test(
+        ch,
+      )
+    ) {
+      w += 13;
+    } else {
+      w += 7.2;
+    }
+  }
+  return (w + 6) / 2;
+}
+
 function fmtTotal(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "—";
   const abs = Math.abs(n);
@@ -462,7 +483,9 @@ function renderChart(
   buckets: BucketInfo[],
   withRoas: boolean,
 ) {
-  const bucketOverlay = buckets.map((b) => (
+  // Rectangles only — labels are drawn separately via <Customized> below so
+  // they aren't subject to the ReferenceArea's plot-area clip path.
+  const bucketRects = buckets.map((b) => (
     <ReferenceArea
       key={b.firstDate}
       x1={b.firstDate}
@@ -472,53 +495,98 @@ function renderChart(
       stroke="rgba(245, 158, 11, 0.25)"
       strokeDasharray="2 3"
       ifOverflow="hidden"
-      label={{
-        position: "insideTop",
-        content: (props) => {
-          const vb = (props as {
-            viewBox?: { x?: number; y?: number; width?: number };
-          }).viewBox;
-          if (!vb || vb.x == null || vb.y == null || vb.width == null) return null;
-          const cx = vb.x + vb.width / 2;
-          const topY = vb.y + 14;
-          return (
-            <g>
-              <text
-                x={cx}
-                y={topY}
-                textAnchor="middle"
-                fontSize={12}
-                fontWeight={700}
-                fill="#ffffff"
-                stroke="#0f172a"
-                strokeWidth={3}
-                strokeLinejoin="round"
-                paintOrder="stroke"
-              >
-                {b.label} · 일평균 {fmtAvgMoney(b.primaryAvg)} ({b.days}일)
-              </text>
-              {b.roas != null && (
-                <text
-                  x={cx}
-                  y={topY + 16}
-                  textAnchor="middle"
-                  fontSize={12}
-                  fontWeight={700}
-                  fill="#fbbf24"
-                  stroke="#0f172a"
-                  strokeWidth={3}
-                  strokeLinejoin="round"
-                  paintOrder="stroke"
-                >
-                  ROAS {b.roas.toFixed(2)}
-                </text>
-              )}
-            </g>
-          );
-        },
-      }}
     />
   ));
+
+  const bucketLabels =
+    buckets.length > 0 ? (
+      <Customized
+        key="bucket-labels"
+        component={(props: unknown) => {
+          const p = props as {
+            xAxisMap?: Record<string, { scale?: (v: unknown) => number }>;
+            offset?: { left?: number; top?: number; width?: number };
+          };
+          const xAxes = p.xAxisMap ? Object.values(p.xAxisMap) : [];
+          const xScale = xAxes[0]?.scale;
+          const offset = p.offset;
+          if (
+            !xScale ||
+            !offset ||
+            offset.left == null ||
+            offset.top == null ||
+            offset.width == null
+          ) {
+            return null;
+          }
+          const plotLeft = offset.left;
+          const plotRight = offset.left + offset.width;
+          const topY = offset.top + 14;
+          return (
+            <g>
+              {buckets.map((b) => {
+                const x1 = xScale(b.firstDate);
+                const x2 = xScale(b.lastDate);
+                if (typeof x1 !== "number" || typeof x2 !== "number") return null;
+                const bucketCx = (x1 + x2) / 2;
+                const text1 = `${b.label} · 일평균 ${fmtAvgMoney(b.primaryAvg)} (${b.days}일)`;
+                const text2 = b.roas != null ? `ROAS ${b.roas.toFixed(2)}` : null;
+                const halfW = Math.max(
+                  estimateBucketLabelHalfWidth(text1),
+                  text2 ? estimateBucketLabelHalfWidth(text2) : 0,
+                );
+                const minCx = plotLeft + halfW;
+                const maxCx = plotRight - halfW;
+                const cx =
+                  minCx > maxCx
+                    ? (plotLeft + plotRight) / 2
+                    : Math.max(minCx, Math.min(maxCx, bucketCx));
+                return (
+                  <g key={b.firstDate}>
+                    <text
+                      x={cx}
+                      y={topY}
+                      textAnchor="middle"
+                      fontSize={12}
+                      fontWeight={700}
+                      fill="#ffffff"
+                      stroke="#0f172a"
+                      strokeWidth={3}
+                      strokeLinejoin="round"
+                      paintOrder="stroke"
+                    >
+                      {text1}
+                    </text>
+                    {text2 && (
+                      <text
+                        x={cx}
+                        y={topY + 16}
+                        textAnchor="middle"
+                        fontSize={12}
+                        fontWeight={700}
+                        fill="#fbbf24"
+                        stroke="#0f172a"
+                        strokeWidth={3}
+                        strokeLinejoin="round"
+                        paintOrder="stroke"
+                      >
+                        {text2}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+            </g>
+          );
+        }}
+      />
+    ) : null;
+  const bucketOverlay = (
+    <>
+      {bucketRects}
+      {bucketLabels}
+    </>
+  );
 
   const axisOf = (k: string): Axis => seriesAxis.get(k) ?? "left";
   const hasRight = seriesKeys.some((k) => axisOf(k) === "right") || withRoas;

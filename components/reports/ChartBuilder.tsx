@@ -18,14 +18,16 @@ import {
   Legend,
   ReferenceArea,
   ResponsiveContainer,
+  Customized,
 } from "recharts";
-import { Loader2, Search, ArrowUp, ArrowDown, ArrowUpDown, FileText, X } from "lucide-react";
+import { Loader2, Search, ArrowUp, ArrowDown, ArrowUpDown, FileText, X, Plus, Pencil, Trash2 } from "lucide-react";
 import AsinLinkified from "@/components/reports/AsinLinkified";
 import { createPortal } from "react-dom";
 import type { ReportColumn } from "@/lib/reports/types";
 import type { FilterState } from "@/lib/reports/filter";
 import { fmtShortDate } from "@/lib/reports/format";
 import DimensionFilter from "@/components/reports/DimensionFilter";
+import { EntryForm, type HistoryEntry } from "@/components/reports/CampaignEntryForm";
 import { cn } from "@/lib/utils";
 
 type ChartKind = "bar" | "line" | "area" | "pie";
@@ -1051,17 +1053,9 @@ function fmtMoneyShort(n: number): string {
   return "$" + n.toFixed(0);
 }
 
-interface HistoryEntry {
-  id: string;
-  campaign_name: string | null;
-  entry_date: string;
-  note: string;
-  screenshots: string[];
-}
-
-/** Read-only popup that lists 수정일지 entries for a single campaign under
- *  a brand. Shown when the user clicks the file-text icon in the right
- *  panel of the campaign chart. */
+/** Popup that lists 수정일지 entries for a single campaign under a brand,
+ *  with inline add / edit / delete. Shown when the user clicks the
+ *  file-text icon in the right panel of the campaign chart. */
 function CampaignHistoryPopup({
   brand,
   campaign,
@@ -1076,13 +1070,16 @@ function CampaignHistoryPopup({
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [addingNew, setAddingNew] = useState(false);
+
+  const baseUrl = `/api/brands/${encodeURIComponent(brand)}`;
 
   useEffect(() => {
     const abort = new AbortController();
     setLoading(true);
-    fetch(`/api/brands/${encodeURIComponent(brand)}/history`, {
-      signal: abort.signal,
-    })
+    fetch(`${baseUrl}/history`, { signal: abort.signal })
       .then((r) => r.json())
       .then((j) => {
         const all = (j.entries ?? []) as HistoryEntry[];
@@ -1098,7 +1095,7 @@ function CampaignHistoryPopup({
       })
       .finally(() => setLoading(false));
     return () => abort.abort();
-  }, [brand, campaign]);
+  }, [baseUrl, campaign, refreshKey]);
 
   useEffect(() => {
     const prev = document.body.style.overflow;
@@ -1112,6 +1109,25 @@ function CampaignHistoryPopup({
       document.body.style.overflow = prev;
     };
   }, [onClose]);
+
+  async function deleteEntry(id: string) {
+    if (!window.confirm("이 기록을 삭제할까요?")) return;
+    const res = await fetch(`${baseUrl}/history/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      alert(`삭제 실패: ${j.error ?? res.status}`);
+      return;
+    }
+    setRefreshKey((k) => k + 1);
+  }
+
+  // The picker is locked to the popup's campaign, so the autocomplete list is
+  // never opened — pass just this campaign as the only option.
+  const lockedCampaigns = useMemo(() => [campaign], [campaign]);
+  const lockedNicknames = useMemo(
+    () => (nickname ? { [campaign]: nickname } : {}),
+    [campaign, nickname],
+  );
 
   if (typeof document === "undefined") return null;
   return createPortal(
@@ -1137,14 +1153,39 @@ function CampaignHistoryPopup({
               )}
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-md text-gray-400 hover:text-rose-300 hover:bg-white/5"
-          >
-            <X size={16} />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {!addingNew && (
+              <button
+                onClick={() => setAddingNew(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-gradient-to-r from-cyan-500 to-purple-500 text-white text-xs font-medium hover:from-cyan-600 hover:to-purple-600 shadow-md shadow-cyan-500/20"
+                title="새 기록 추가"
+              >
+                <Plus size={12} /> 새 기록
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-md text-gray-400 hover:text-rose-300 hover:bg-white/5"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
         <div className="p-5 flex-1 overflow-auto space-y-3">
+          {addingNew && (
+            <EntryForm
+              baseUrl={baseUrl}
+              campaigns={lockedCampaigns}
+              nicknames={lockedNicknames}
+              initialCampaign={campaign}
+              lockCampaign
+              onCancel={() => setAddingNew(false)}
+              onSaved={() => {
+                setAddingNew(false);
+                setRefreshKey((k) => k + 1);
+              }}
+            />
+          )}
           {loading ? (
             <div className="flex items-center gap-2 p-6 text-sm text-gray-500">
               <Loader2 size={14} className="animate-spin text-cyan-400" /> 불러오는 중...
@@ -1153,41 +1194,76 @@ function CampaignHistoryPopup({
             <div className="p-3 rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-300 text-sm">
               {error}
             </div>
-          ) : entries.length === 0 ? (
+          ) : entries.length === 0 && !addingNew ? (
             <div className="p-8 text-center text-sm text-gray-500">
               이 캠페인의 수정일지 기록이 없습니다.
             </div>
           ) : (
-            entries.map((e) => (
-              <div
-                key={e.id}
-                className="p-3 rounded-md border border-purple-500/20 bg-slate-900/60 space-y-2"
-              >
-                <div className="text-xs text-cyan-300 font-mono">{e.entry_date}</div>
-                <p className="text-sm text-gray-200 whitespace-pre-wrap">
-                  {e.note || <span className="italic text-gray-500">(내용 없음)</span>}
-                </p>
-                {e.screenshots && e.screenshots.length > 0 && (
-                  <div className="flex flex-wrap gap-2">
-                    {e.screenshots.map((url) => (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <a
-                        key={url}
-                        href={url}
-                        target="_blank"
-                        rel="noopener noreferrer"
+            entries.map((e) =>
+              editingId === e.id ? (
+                <EntryForm
+                  key={e.id}
+                  baseUrl={baseUrl}
+                  campaigns={lockedCampaigns}
+                  nicknames={lockedNicknames}
+                  initial={e}
+                  initialCampaign={campaign}
+                  lockCampaign
+                  onCancel={() => setEditingId(null)}
+                  onSaved={() => {
+                    setEditingId(null);
+                    setRefreshKey((k) => k + 1);
+                  }}
+                />
+              ) : (
+                <div
+                  key={e.id}
+                  className="p-3 rounded-md border border-purple-500/20 bg-slate-900/60 space-y-2"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="text-xs text-cyan-300 font-mono">{e.entry_date}</div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        onClick={() => setEditingId(e.id)}
+                        className="p-1 rounded-md text-gray-400 hover:text-cyan-300 hover:bg-white/5"
+                        title="수정"
                       >
-                        <img
-                          src={url}
-                          alt=""
-                          className="h-24 w-auto rounded-md border border-purple-500/20 object-cover hover:border-cyan-500/50 transition-colors"
-                        />
-                      </a>
-                    ))}
+                        <Pencil size={13} />
+                      </button>
+                      <button
+                        onClick={() => deleteEntry(e.id)}
+                        className="p-1 rounded-md text-gray-400 hover:text-rose-300 hover:bg-rose-500/10"
+                        title="삭제"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
                   </div>
-                )}
-              </div>
-            ))
+                  <p className="text-sm text-gray-200 whitespace-pre-wrap">
+                    {e.note || <span className="italic text-gray-500">(내용 없음)</span>}
+                  </p>
+                  {e.screenshots && e.screenshots.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {e.screenshots.map((url) => (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <a
+                          key={url}
+                          href={url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <img
+                            src={url}
+                            alt=""
+                            className="h-24 w-auto rounded-md border border-purple-500/20 object-cover hover:border-cyan-500/50 transition-colors"
+                          />
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ),
+            )
           )}
         </div>
       </div>
@@ -1220,6 +1296,27 @@ function fmtAvgMoney(n: number | null | undefined): string {
   return "$" + Math.round(n).toLocaleString();
 }
 
+/** Estimate the half-width (in SVG px) of a bucket-overlay label rendered at
+ *  fontSize 12, fontWeight 700 with a 3px outline stroke. CJK glyphs are
+ *  roughly square; ASCII is roughly half that width. Used to clamp the label
+ *  position so it never extends past the chart's plot area. */
+function estimateBucketLabelHalfWidth(text: string): number {
+  let w = 0;
+  for (const ch of text) {
+    if (
+      /[　-〿㐀-䶿一-鿿가-힯＀-￯]/.test(
+        ch,
+      )
+    ) {
+      w += 13;
+    } else {
+      w += 7.2;
+    }
+  }
+  // 3px stroke → +6px visual width.
+  return (w + 6) / 2;
+}
+
 /** First day of the calendar month containing the given ISO date. */
 function monthBucketStart(iso: string): string {
   const m = /^(\d{4})-(\d{2})/.exec(iso);
@@ -1244,7 +1341,11 @@ function renderChart(
   logScale: boolean,
   buckets: BucketInfo[],
 ) {
-  const bucketOverlay = buckets.map((b) => (
+  // Rectangles only — the label is drawn separately via <Customized> below
+  // so it isn't subject to the ReferenceArea's plot-area clip path. With the
+  // clip applied, narrow edge buckets (e.g. a 2-day May bucket) had their
+  // centered labels truncated at the chart's right edge.
+  const bucketRects = buckets.map((b) => (
     <ReferenceArea
       key={b.firstDate}
       x1={b.firstDate}
@@ -1254,51 +1355,99 @@ function renderChart(
       stroke="rgba(168, 85, 247, 0.2)"
       strokeDasharray="2 3"
       ifOverflow="hidden"
-      label={{
-        position: "insideTop",
-        content: (props) => {
-          const vb = (props as { viewBox?: { x?: number; y?: number; width?: number } }).viewBox;
-          if (!vb || vb.x == null || vb.y == null || vb.width == null) return null;
-          const cx = vb.x + vb.width / 2;
-          const topY = vb.y + 14;
-          return (
-            <g>
-              <text
-                x={cx}
-                y={topY}
-                textAnchor="middle"
-                fontSize={12}
-                fontWeight={700}
-                fill="#ffffff"
-                stroke="#0f172a"
-                strokeWidth={3}
-                strokeLinejoin="round"
-                paintOrder="stroke"
-              >
-                {b.label} · 일평균 {fmtAvgMoney(b.primaryAvg)} ({b.days}일)
-              </text>
-              {b.roas != null && (
-                <text
-                  x={cx}
-                  y={topY + 16}
-                  textAnchor="middle"
-                  fontSize={12}
-                  fontWeight={700}
-                  fill="#fbbf24"
-                  stroke="#0f172a"
-                  strokeWidth={3}
-                  strokeLinejoin="round"
-                  paintOrder="stroke"
-                >
-                  ROAS {b.roas.toFixed(2)}
-                </text>
-              )}
-            </g>
-          );
-        },
-      }}
     />
   ));
+
+  const bucketLabels =
+    buckets.length > 0 ? (
+      <Customized
+        key="bucket-labels"
+        component={(props: unknown) => {
+          const p = props as {
+            xAxisMap?: Record<string, { scale?: (v: unknown) => number }>;
+            offset?: { left?: number; top?: number; width?: number };
+          };
+          const xAxes = p.xAxisMap ? Object.values(p.xAxisMap) : [];
+          const xScale = xAxes[0]?.scale;
+          const offset = p.offset;
+          if (
+            !xScale ||
+            !offset ||
+            offset.left == null ||
+            offset.top == null ||
+            offset.width == null
+          ) {
+            return null;
+          }
+          const plotLeft = offset.left;
+          const plotRight = offset.left + offset.width;
+          const topY = offset.top + 14;
+          return (
+            <g>
+              {buckets.map((b) => {
+                const x1 = xScale(b.firstDate);
+                const x2 = xScale(b.lastDate);
+                if (typeof x1 !== "number" || typeof x2 !== "number") return null;
+                const bucketCx = (x1 + x2) / 2;
+                const text1 = `${b.label} · 일평균 ${fmtAvgMoney(b.primaryAvg)} (${b.days}일)`;
+                const text2 = b.roas != null ? `ROAS ${b.roas.toFixed(2)}` : null;
+                const halfW = Math.max(
+                  estimateBucketLabelHalfWidth(text1),
+                  text2 ? estimateBucketLabelHalfWidth(text2) : 0,
+                );
+                // Clamp so text never extends past either chart edge.
+                const minCx = plotLeft + halfW;
+                const maxCx = plotRight - halfW;
+                const cx =
+                  minCx > maxCx
+                    ? (plotLeft + plotRight) / 2
+                    : Math.max(minCx, Math.min(maxCx, bucketCx));
+                return (
+                  <g key={b.firstDate}>
+                    <text
+                      x={cx}
+                      y={topY}
+                      textAnchor="middle"
+                      fontSize={12}
+                      fontWeight={700}
+                      fill="#ffffff"
+                      stroke="#0f172a"
+                      strokeWidth={3}
+                      strokeLinejoin="round"
+                      paintOrder="stroke"
+                    >
+                      {text1}
+                    </text>
+                    {text2 && (
+                      <text
+                        x={cx}
+                        y={topY + 16}
+                        textAnchor="middle"
+                        fontSize={12}
+                        fontWeight={700}
+                        fill="#fbbf24"
+                        stroke="#0f172a"
+                        strokeWidth={3}
+                        strokeLinejoin="round"
+                        paintOrder="stroke"
+                      >
+                        {text2}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+            </g>
+          );
+        }}
+      />
+    ) : null;
+  const bucketOverlay = (
+    <>
+      {bucketRects}
+      {bucketLabels}
+    </>
+  );
   const axisOf = (k: string): Axis => seriesAxis.get(k) ?? "left";
   const hasRight = seriesKeys.some((k) => axisOf(k) === "right");
   const yScale = logScale ? ("log" as const) : ("auto" as const);

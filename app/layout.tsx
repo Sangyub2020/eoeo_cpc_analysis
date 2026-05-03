@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Tags, MessageSquare, BookOpen } from "lucide-react";
+import { Tags, BookOpen } from "lucide-react";
 import UserMenu from "@/components/layout/UserMenu";
+import FeedbackNavLink from "@/components/layout/FeedbackNavLink";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -30,13 +31,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   <Tags className="h-4 w-4" />
                   브랜드
                 </Link>
-                <Link
-                  href="/feedback"
-                  className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 text-gray-300 hover:bg-white/5 hover:text-cyan-300"
-                >
-                  <MessageSquare className="h-4 w-4" />
-                  건의 · 피드백
-                </Link>
+                <FeedbackNavLink />
                 <Link
                   href="/howto"
                   className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 text-gray-300 hover:bg-white/5 hover:text-cyan-300"
