@@ -15,6 +15,7 @@ import UploadsTab from "@/components/reports/UploadsTab";
 import ViewsBar from "@/components/reports/ViewsBar";
 import DateRangeSlider from "@/components/reports/DateRangeSlider";
 import BrandEventsBar from "@/components/reports/BrandEventsBar";
+import AiAnalysisPanel from "@/components/reports/AiAnalysisPanel";
 import type { BrandEvent } from "@/lib/reports/brand-events";
 import { emptyFilter, type FilterState } from "@/lib/reports/filter";
 import type { ReportColumn, ReportType } from "@/lib/reports/types";
@@ -675,6 +676,16 @@ export default function BrandDetailPage() {
             activeViewId={activeViewId}
             currentConfig={currentViewConfig}
             onLoad={loadView}
+          />
+
+          <AiAnalysisPanel
+            brand={brand}
+            minDate={brandDateBounds?.min}
+            maxDate={brandDateBounds?.max}
+            primarySlug={primary?.type.slug ?? null}
+            nicknames={nicknames}
+            initialFrom={searchFilter.dateFrom ?? targetFilter.dateFrom ?? null}
+            initialTo={searchFilter.dateTo ?? targetFilter.dateTo ?? null}
           />
 
           {/* One ChartBuilder at the top — it drives kind/X/Y/group for the
