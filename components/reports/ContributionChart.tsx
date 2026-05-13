@@ -17,6 +17,7 @@ import CumulativeDistributionModal from "@/components/reports/CumulativeDistribu
 import type { FilterState } from "@/lib/reports/filter";
 import type { ReportColumn } from "@/lib/reports/types";
 import { fmtShortDate } from "@/lib/reports/format";
+import { eventColors, type BrandEvent } from "@/lib/reports/brand-events";
 
 const COLORS = [
   "#22d3ee", "#a855f7", "#10b981", "#f59e0b", "#f43f5e",
@@ -53,6 +54,8 @@ interface Props {
   /** Optional drill-down handler — when present the TermPanel shows a 🎯
    *  button per row that fires this with the term's value. */
   onDrill?: (value: string) => void;
+  /** 브랜드 페이지의 이벤트 — X축 음영으로 표시. */
+  events?: BrandEvent[];
 }
 
 export default function ContributionChart({
@@ -67,6 +70,7 @@ export default function ContributionChart({
   termsLoading,
   stackColumn = DEFAULT_STACK_COL,
   onDrill,
+  events,
 }: Props) {
   const STACK_COL = stackColumn;
   const stackCol = columns.find((c) => c.column_name === STACK_COL);
@@ -327,6 +331,53 @@ export default function ContributionChart({
                   wrapperStyle={{ zIndex: 9999, pointerEvents: "none" }}
                   allowEscapeViewBox={{ x: true, y: true }}
                 />
+                {(events ?? []).map((e) => {
+                  const c = eventColors(e.color);
+                  return (
+                    <ReferenceArea
+                      key={`evt-${e.id}`}
+                      x1={e.start_date}
+                      x2={e.end_date}
+                      fill={c.fill}
+                      stroke={c.stroke}
+                      strokeDasharray="2 2"
+                      ifOverflow="hidden"
+                      label={{
+                        position: "insideTop",
+                        content: (props) => {
+                          const vb = (props as { viewBox?: { x?: number; y?: number; width?: number; height?: number } }).viewBox;
+                          if (
+                            !vb ||
+                            vb.x == null ||
+                            vb.y == null ||
+                            vb.width == null ||
+                            vb.height == null
+                          ) {
+                            return null;
+                          }
+                          const cx = vb.x + vb.width / 2;
+                          const baselineY = vb.y + 14;
+                          return (
+                            <text
+                              x={cx}
+                              y={baselineY}
+                              textAnchor="middle"
+                              fontSize={11}
+                              fontWeight={700}
+                              fill={e.color}
+                              stroke="#0f172a"
+                              strokeWidth={3}
+                              strokeLinejoin="round"
+                              paintOrder="stroke"
+                            >
+                              {e.name}
+                            </text>
+                          );
+                        },
+                      }}
+                    />
+                  );
+                })}
                 {monthlyBuckets.map((b) => (
                   <ReferenceArea
                     key={b.firstDate + "_bg"}

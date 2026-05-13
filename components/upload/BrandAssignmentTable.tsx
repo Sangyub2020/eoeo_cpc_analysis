@@ -10,6 +10,9 @@ interface CampaignStat {
   /** Null means no rule matched yet — user must assign manually. */
   auto_brand_slug: string | null;
   auto_rule_pattern: string | null;
+  /** "history" = matched a previously uploaded campaign of the same name,
+   *  "rule" = matched a brand rule, null = no auto-match. */
+  auto_source?: "history" | "rule" | null;
 }
 
 interface Props {
@@ -130,7 +133,7 @@ export default function BrandAssignmentTable({
             <tr className="text-left text-gray-500 uppercase tracking-wide text-[10px]">
               <th className="px-3 py-2 font-medium">Campaign name</th>
               <th className="px-2 py-2 w-20 text-right font-medium">Rows</th>
-              <th className="px-2 py-2 w-28 font-medium">Matched rule</th>
+              <th className="px-2 py-2 w-32 font-medium">자동 매칭</th>
               <th className="px-3 py-2 w-48 font-medium">Brand</th>
             </tr>
           </thead>
@@ -138,6 +141,7 @@ export default function BrandAssignmentTable({
             {filtered.map((s) => {
               const assigned = assignments.get(s.campaign_name) || "";
               const isAuto = assigned && assigned === (s.auto_brand_slug ?? "");
+              const autoSource = s.auto_source ?? null;
               return (
                 <tr
                   key={s.campaign_name}
@@ -149,13 +153,23 @@ export default function BrandAssignmentTable({
                   <td className="px-2 py-1.5 text-right text-gray-400 tabular-nums">
                     {s.row_count.toLocaleString()}
                   </td>
-                  <td className="px-2 py-1.5 font-mono text-gray-500">
-                    {s.auto_rule_pattern ? (
-                      <span className="text-gray-400" title={s.auto_rule_pattern}>
+                  <td className="px-2 py-1.5 text-gray-500">
+                    {autoSource === "history" ? (
+                      <span
+                        className="inline-block px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+                        title="이전 업로드에서 같은 캠페인 이름이 이 브랜드로 분류되었습니다"
+                      >
+                        이전 업로드
+                      </span>
+                    ) : s.auto_rule_pattern ? (
+                      <span
+                        className="font-mono text-gray-400"
+                        title={s.auto_rule_pattern}
+                      >
                         {s.auto_rule_pattern}
                       </span>
                     ) : (
-                      "—"
+                      <span className="text-gray-600">—</span>
                     )}
                   </td>
                   <td className="px-3 py-1.5">
@@ -180,10 +194,18 @@ export default function BrandAssignmentTable({
                       </select>
                       {isAuto && (
                         <span
-                          className="text-[10px] text-cyan-300/70 shrink-0"
-                          title="자동 매칭"
+                          className={`text-[10px] shrink-0 ${
+                            autoSource === "history"
+                              ? "text-emerald-300/80"
+                              : "text-cyan-300/70"
+                          }`}
+                          title={
+                            autoSource === "history"
+                              ? "이전 업로드에서 자동 매칭"
+                              : "규칙 기반 자동 매칭"
+                          }
                         >
-                          auto
+                          {autoSource === "history" ? "이전" : "auto"}
                         </span>
                       )}
                     </div>

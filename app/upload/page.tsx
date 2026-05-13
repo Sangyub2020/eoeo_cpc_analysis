@@ -79,6 +79,9 @@ interface CampaignStat {
   row_count: number;
   auto_brand_slug: string | null;
   auto_rule_pattern: string | null;
+  /** Where the auto-assignment came from: "history" (matched a previously
+   *  uploaded campaign of the same name) or "rule" (matched a brand rule). */
+  auto_source: "history" | "rule" | null;
 }
 
 export default function UploadPageWrapper() {
@@ -338,15 +341,46 @@ function UploadPage() {
         row_count: c,
         auto_brand_slug: null,
         auto_rule_pattern: null,
+        auto_source: null,
       }));
+    }
+
+    // Look up brand mappings from previous uploads — if the same campaign name
+    // was uploaded before, reuse that brand. History takes precedence over
+    // rule-based matching since the user has explicitly classified it.
+    const validSlugs = new Set(brands.map((b) => b.slug));
+    let history: Record<string, string> = {};
+    try {
+      const res = await fetch("/api/brands/campaign-history", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          campaign_names: stats.map((s) => s.campaign_name),
+        }),
+      });
+      if (res.ok) {
+        const j = (await res.json()) as { mappings?: Record<string, string> };
+        history = j.mappings ?? {};
+      }
+    } catch {
+      // Non-fatal — fall back to rule-only auto-matching.
     }
 
     const auto = new Map<string, string>();
     for (const s of stats) {
+      const prev = history[s.campaign_name];
+      if (prev && validSlugs.has(prev)) {
+        s.auto_brand_slug = prev;
+        s.auto_rule_pattern = null;
+        s.auto_source = "history";
+        auto.set(s.campaign_name, prev);
+        continue;
+      }
       const hit = matchBrand(s.campaign_name, compiledRules);
       if (hit) {
         s.auto_brand_slug = hit.brand_slug;
         s.auto_rule_pattern = `${hit.match_type}: ${hit.pattern}`;
+        s.auto_source = "rule";
         auto.set(s.campaign_name, hit.brand_slug);
       } else {
         auto.set(s.campaign_name, "");
@@ -1432,6 +1466,7 @@ async function scanCampaignsStreaming(
             row_count: c,
             auto_brand_slug: null,
             auto_rule_pattern: null,
+            auto_source: null,
           }),
         );
         resolve(stats);

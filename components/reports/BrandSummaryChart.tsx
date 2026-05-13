@@ -24,6 +24,7 @@ import { Loader2 } from "lucide-react";
 import type { ReportColumn } from "@/lib/reports/types";
 import type { ChartConfigSnapshot } from "@/components/reports/ChartBuilder";
 import { fmtShortDate } from "@/lib/reports/format";
+import { eventColors, type BrandEvent } from "@/lib/reports/brand-events";
 
 type AggFn = "sum" | "avg" | "min" | "max" | "count";
 type Axis = "left" | "right";
@@ -41,6 +42,8 @@ interface Props {
    *  reuses kind / xCol / yCols / showWeeklyAvg / logScale so changes there
    *  are reflected here too. groupCol is intentionally ignored. */
   config: ChartConfigSnapshot | null;
+  /** 브랜드 페이지에서 등록한 이벤트 — X 축이 date 컬럼일 때만 표시. */
+  events?: BrandEvent[];
 }
 
 interface AggResp {
@@ -72,6 +75,7 @@ export default function BrandSummaryChart({
   dateFrom,
   dateTo,
   config,
+  events,
 }: Props) {
   const kind: ChartKind = config?.kind ?? "line";
   const xCol = config?.xCol ?? dateColumn ?? "";
@@ -275,6 +279,10 @@ export default function BrandSummaryChart({
   }, [data, showWeeklyAvg, columns, salesAlias, costAlias]);
 
   const xLabel = columns.find((c) => c.column_name === xCol)?.source_header ?? xCol;
+  const xColIsDate = (() => {
+    const c = columns.find((col) => col.column_name === xCol);
+    return c?.data_type === "date" || c?.data_type === "timestamp";
+  })();
 
   // Prune hidden labels that no longer correspond to a current series — keeps
   // the set tight after the user removes a Y axis upstream.
@@ -417,6 +425,7 @@ export default function BrandSummaryChart({
               logScale,
               monthlyBuckets,
               showRoas && roasAvailable,
+              xColIsDate ? events ?? [] : [],
             )}
           </ResponsiveContainer>
         )}
@@ -482,7 +491,63 @@ function renderChart(
   logScale: boolean,
   buckets: BucketInfo[],
   withRoas: boolean,
+  events: BrandEvent[],
 ) {
+  // ContributionChart 와 동일한 패턴: ReferenceArea 의 label prop 으로 음영과
+  // 라벨을 같이 그린다. Customized 로 그리면 categorical X축에서 scale 매칭이
+  // 실패하거나 시리즈에 가려져서 라벨이 안 보이는 사례가 있다.
+  const eventOverlay = events.map((e) => {
+    const c = eventColors(e.color);
+    return (
+      <ReferenceArea
+        key={`evt-${e.id}`}
+        x1={e.start_date}
+        x2={e.end_date}
+        yAxisId="left"
+        fill={c.fill}
+        stroke={c.stroke}
+        strokeDasharray="2 2"
+        ifOverflow="hidden"
+        label={{
+          position: "insideTop",
+          content: (props) => {
+            const vb = (
+              props as {
+                viewBox?: { x?: number; y?: number; width?: number; height?: number };
+              }
+            ).viewBox;
+            if (
+              !vb ||
+              vb.x == null ||
+              vb.y == null ||
+              vb.width == null ||
+              vb.height == null
+            ) {
+              return null;
+            }
+            const cx = vb.x + vb.width / 2;
+            const topY = vb.y + 14;
+            return (
+              <text
+                x={cx}
+                y={topY}
+                textAnchor="middle"
+                fontSize={11}
+                fontWeight={700}
+                fill={e.color}
+                stroke="#0f172a"
+                strokeWidth={3}
+                strokeLinejoin="round"
+                paintOrder="stroke"
+              >
+                {e.name}
+              </text>
+            );
+          },
+        }}
+      />
+    );
+  });
   // Rectangles only — labels are drawn separately via <Customized> below so
   // they aren't subject to the ReferenceArea's plot-area clip path.
   const bucketRects = buckets.map((b) => (
@@ -668,6 +733,7 @@ function renderChart(
           {hasRight && <YAxis yAxisId="right" {...yAxisRightProps} />}
           <Tooltip {...tooltipProps} />
           <Legend {...legendProps} />
+          {eventOverlay}
           {bucketOverlay}
           {seriesKeys.map((k, i) => (
             <Bar
@@ -689,6 +755,7 @@ function renderChart(
           {hasRight && <YAxis yAxisId="right" {...yAxisRightProps} />}
           <Tooltip {...tooltipProps} />
           <Legend {...legendProps} />
+          {eventOverlay}
           {bucketOverlay}
           {seriesKeys.map((k, i) => (
             <Line
@@ -714,6 +781,7 @@ function renderChart(
           {hasRight && <YAxis yAxisId="right" {...yAxisRightProps} />}
           <Tooltip {...tooltipProps} />
           <Legend {...legendProps} />
+          {eventOverlay}
           {bucketOverlay}
           {seriesKeys.map((k, i) => (
             <Area

@@ -26,6 +26,10 @@ import { createPortal } from "react-dom";
 import type { ReportColumn } from "@/lib/reports/types";
 import type { FilterState } from "@/lib/reports/filter";
 import { fmtShortDate } from "@/lib/reports/format";
+import {
+  eventColors,
+  type BrandEvent,
+} from "@/lib/reports/brand-events";
 import DimensionFilter from "@/components/reports/DimensionFilter";
 import { EntryForm, type HistoryEntry } from "@/components/reports/CampaignEntryForm";
 import { cn } from "@/lib/utils";
@@ -40,6 +44,8 @@ const COLORS = [
   "#22d3ee", "#a855f7", "#10b981", "#f59e0b", "#f43f5e",
   "#38bdf8", "#84cc16", "#e879f9", "#fb7185", "#fbbf24",
 ];
+/** ROAS 라인은 모든 차트에서 동일한 노란색 점선으로 통일. */
+const ROAS_COLOR = "#fbbf24";
 
 interface Props {
   slug: string;
@@ -59,6 +65,9 @@ interface Props {
    *  panel — used by the brand page to slot the brand-wide summary chart
    *  directly above the campaign chart. */
   slotBeforeChart?: React.ReactNode;
+  /** 브랜드 페이지에서 등록한 이벤트 — X 축이 날짜 컬럼일 때만 차트 위에
+   *  ReferenceArea + 라벨로 표시한다. */
+  events?: BrandEvent[];
 }
 
 export interface ChartConfigSnapshot {
@@ -68,6 +77,8 @@ export interface ChartConfigSnapshot {
   groupCol: string;
   showWeeklyAvg?: boolean;
   logScale?: boolean;
+  /** ROAS 일간 추이 토글 상태 — 저장된 뷰에 포함되어 복원된다. */
+  showRoas?: boolean;
 }
 
 type YCol = { col: string; fn: AggFn; axis: Axis; enabled: boolean };
@@ -93,7 +104,7 @@ interface BucketInfo {
   roas: number | null;
 }
 
-export default function ChartBuilder({ slug, columns, filter, setFilter, initialConfig, onConfigChange, nicknames, brand, slotBeforeChart }: Props) {
+export default function ChartBuilder({ slug, columns, filter, setFilter, initialConfig, onConfigChange, nicknames, brand, slotBeforeChart, events }: Props) {
   const numericCols = columns.filter(
     (c) => c.data_type === "numeric" || c.data_type === "integer",
   );
@@ -145,6 +156,7 @@ export default function ChartBuilder({ slug, columns, filter, setFilter, initial
   });
   const [showWeeklyAvg, setShowWeeklyAvg] = useState<boolean>(initialConfig?.showWeeklyAvg ?? true);
   const [logScale, setLogScale] = useState<boolean>(false);
+  const [showRoas, setShowRoas] = useState<boolean>(initialConfig?.showRoas ?? false);
   const [autoFilling, setAutoFilling] = useState(false);
 
   // Per-group stats for the right-side panel (e.g. campaign name + cost + sales + ROAS).
@@ -153,9 +165,9 @@ export default function ChartBuilder({ slug, columns, filter, setFilter, initial
   >([]);
 
   useEffect(() => {
-    onConfigChange?.({ kind, xCol, yCols, groupCol, showWeeklyAvg, logScale });
+    onConfigChange?.({ kind, xCol, yCols, groupCol, showWeeklyAvg, logScale, showRoas });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind, xCol, yCols, groupCol, showWeeklyAvg, logScale]);
+  }, [kind, xCol, yCols, groupCol, showWeeklyAvg, logScale, showRoas]);
 
   // Fetch per-group stats (Cost + Sales, ordered by cost desc). Runs when the group
   // column or the filter (excluding this column) changes.
@@ -284,12 +296,14 @@ export default function ChartBuilder({ slug, columns, filter, setFilter, initial
   }, [slug, filter, xCol, yCols, groupCol]);
 
   // Pivot server rows into chart-ready shape
-  const { chartRows, seriesKeys, seriesAxis, metricTotals } = useMemo(() => {
+  const { chartRows, seriesKeys, seriesAxis, metricTotals, salesAlias, costAlias } = useMemo(() => {
     const empty = {
       chartRows: [] as Record<string, unknown>[],
       seriesKeys: [] as string[],
       seriesAxis: new Map<string, Axis>(),
       metricTotals: [] as { label: string; fn: AggFn; total: number }[],
+      salesAlias: null as string | null,
+      costAlias: null as string | null,
     };
     if (!data?.rows?.length) return empty;
     const colMap = new Map(columns.map((c) => [c.column_name, c]));
@@ -311,6 +325,16 @@ export default function ChartBuilder({ slug, columns, filter, setFilter, initial
       axisByKey.get(`${m.col}|${m.fn}`) ?? "left";
 
     const seriesAxis = new Map<string, Axis>();
+
+    // ROAS 시리즈에 쓸 sales / total_cost 의 별칭. 둘 다 fn=sum 으로 활성화된 경우에만 사용.
+    const salesM = data.metricColumns.find(
+      (m) => m.col === "sales" && m.fn === "sum",
+    );
+    const costM = data.metricColumns.find(
+      (m) => m.col === "total_cost" && m.fn === "sum",
+    );
+    const salesAlias = salesM?.alias ?? null;
+    const costAlias = costM?.alias ?? null;
 
     if (data.groupColumn) {
       // One row per (x, g). Pivot so each g becomes a series per y metric.
@@ -336,7 +360,14 @@ export default function ChartBuilder({ slug, columns, filter, setFilter, initial
       for (const row of chartRows) {
         for (const k of Object.keys(row)) if (k !== "x") keys.add(k);
       }
-      return { chartRows, seriesKeys: Array.from(keys), seriesAxis, metricTotals };
+      return {
+        chartRows,
+        seriesKeys: Array.from(keys),
+        seriesAxis,
+        metricTotals,
+        salesAlias,
+        costAlias,
+      };
     }
 
     // No group: each metric is a series, keyed by yLabel
@@ -350,8 +381,38 @@ export default function ChartBuilder({ slug, columns, filter, setFilter, initial
     data.metricColumns.forEach((m, i) => {
       seriesAxis.set(yLabels[i], axisFor(m));
     });
-    return { chartRows, seriesKeys: yLabels, seriesAxis, metricTotals };
+    return { chartRows, seriesKeys: yLabels, seriesAxis, metricTotals, salesAlias, costAlias };
   }, [data, columns, yCols]);
+
+  /** ROAS 토글을 켤 수 있으려면 sales(sum)+total_cost(sum) 가 동시에 활성화돼야 한다. */
+  const roasAvailable = !!salesAlias && !!costAlias;
+
+  /** chartRows 에 일간 합계 ROAS 시리즈를 주입한다. group 모드든 아니든 X 별로
+   *  data.rows 에서 합산한 sales/cost 를 다시 계산해서 같은 X 의 ROAS 1 개를 만든다.
+   *  이렇게 하면 캠페인 단위로 묶여 있어도 "선택된 항목 전체의 일간 ROAS" 가
+   *  하나의 시리즈로 깔끔하게 그려진다. */
+  const renderRows = useMemo(() => {
+    if (!showRoas || !roasAvailable || !data?.rows?.length) return chartRows;
+    const sumByX = new Map<string, { sales: number; cost: number }>();
+    for (const r of data.rows) {
+      const xk = String(r.x);
+      let agg = sumByX.get(xk);
+      if (!agg) {
+        agg = { sales: 0, cost: 0 };
+        sumByX.set(xk, agg);
+      }
+      const s = Number(r[salesAlias!]);
+      const c = Number(r[costAlias!]);
+      if (Number.isFinite(s)) agg.sales += s;
+      if (Number.isFinite(c)) agg.cost += c;
+    }
+    return chartRows.map((row) => {
+      const xk = String(row.x);
+      const a = sumByX.get(xk);
+      const roas = a && a.cost > 0 ? a.sales / a.cost : null;
+      return { ...row, ROAS: roas };
+    });
+  }, [chartRows, data, showRoas, roasAvailable, salesAlias, costAlias]);
 
   // Monthly stats for the overlay labels (independent of pivoted chartRows — computed
   // off the raw server response so it works consistently in both "no group" and "group" modes).
@@ -443,6 +504,12 @@ export default function ChartBuilder({ slug, columns, filter, setFilter, initial
   }
 
   const xLabel = columns.find((c) => c.column_name === xCol)?.source_header ?? xCol;
+  /** X 축이 date/timestamp 컬럼일 때만 이벤트 오버레이를 그린다 (날짜가 아닌
+   *  pivot 에서는 ReferenceArea 의 좌표 매칭이 의미 없음). */
+  const xColIsDate = (() => {
+    const c = columns.find((x) => x.column_name === xCol);
+    return c?.data_type === "date" || c?.data_type === "timestamp";
+  })();
 
   return (
     <div className="space-y-4">
@@ -706,6 +773,31 @@ export default function ChartBuilder({ slug, columns, filter, setFilter, initial
                 )}
               </div>
             ))}
+            <label
+              className={`ml-auto inline-flex items-center gap-1.5 text-xs ${
+                roasAvailable
+                  ? "text-gray-300 cursor-pointer"
+                  : "text-gray-500 opacity-60 cursor-not-allowed"
+              }`}
+              title={
+                roasAvailable
+                  ? "선택된 항목들의 일간 합계 ROAS 추이를 노란 점선으로 표시"
+                  : "Sales(sum) 와 Total cost(sum) 가 모두 활성화돼야 켤 수 있습니다"
+              }
+            >
+              <input
+                type="checkbox"
+                checked={showRoas && roasAvailable}
+                disabled={!roasAvailable}
+                onChange={(e) => setShowRoas(e.target.checked)}
+                className="accent-amber-400"
+              />
+              <span
+                className="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
+                style={{ backgroundColor: ROAS_COLOR }}
+              />
+              <span>ROAS 일간 추이</span>
+            </label>
           </div>
         )}
 
@@ -730,7 +822,17 @@ export default function ChartBuilder({ slug, columns, filter, setFilter, initial
               </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                {renderChart(kind, chartRows, xLabel, seriesKeys, seriesAxis, logScale, monthlyBuckets)}
+                {renderChart(
+                  kind,
+                  renderRows,
+                  xLabel,
+                  seriesKeys,
+                  seriesAxis,
+                  logScale,
+                  monthlyBuckets,
+                  showRoas && roasAvailable,
+                  xColIsDate ? events ?? [] : [],
+                )}
               </ResponsiveContainer>
             )}
           </div>
@@ -1340,7 +1442,66 @@ function renderChart(
   seriesAxis: Map<string, Axis>,
   logScale: boolean,
   buckets: BucketInfo[],
+  withRoas: boolean,
+  events: BrandEvent[],
 ) {
+  // 음영 사각형 + 라벨을 한 ReferenceArea 의 label prop 으로 같이 그린다.
+  // Customized 로 그리면 categorical X축에서 scale 매칭이 실패하거나 데이터
+  // 시리즈에 가려져 라벨이 보이지 않는 사례가 있어, ContributionChart 와 동일한
+  // 패턴으로 통일.
+  const eventOverlay = events.map((e) => {
+    const c = eventColors(e.color);
+    return (
+      <ReferenceArea
+        key={`evt-${e.id}`}
+        x1={e.start_date}
+        x2={e.end_date}
+        yAxisId="left"
+        fill={c.fill}
+        stroke={c.stroke}
+        strokeDasharray="2 2"
+        ifOverflow="hidden"
+        label={{
+          position: "insideTop",
+          content: (props) => {
+            const vb = (
+              props as {
+                viewBox?: { x?: number; y?: number; width?: number; height?: number };
+              }
+            ).viewBox;
+            if (
+              !vb ||
+              vb.x == null ||
+              vb.y == null ||
+              vb.width == null ||
+              vb.height == null
+            ) {
+              return null;
+            }
+            const cx = vb.x + vb.width / 2;
+            const topY = vb.y + 14;
+            return (
+              <text
+                x={cx}
+                y={topY}
+                textAnchor="middle"
+                fontSize={11}
+                fontWeight={700}
+                fill={e.color}
+                stroke="#0f172a"
+                strokeWidth={3}
+                strokeLinejoin="round"
+                paintOrder="stroke"
+              >
+                {e.name}
+              </text>
+            );
+          },
+        }}
+      />
+    );
+  });
+
   // Rectangles only — the label is drawn separately via <Customized> below
   // so it isn't subject to the ReferenceArea's plot-area clip path. With the
   // clip applied, narrow edge buckets (e.g. a 2-day May bucket) had their
@@ -1449,7 +1610,20 @@ function renderChart(
     </>
   );
   const axisOf = (k: string): Axis => seriesAxis.get(k) ?? "left";
-  const hasRight = seriesKeys.some((k) => axisOf(k) === "right");
+  const hasRight = seriesKeys.some((k) => axisOf(k) === "right") || withRoas;
+  const roasSeries = withRoas ? (
+    <Line
+      key="ROAS"
+      type="monotone"
+      dataKey="ROAS"
+      yAxisId="right"
+      stroke={ROAS_COLOR}
+      strokeWidth={1.5}
+      strokeDasharray="4 3"
+      dot={false}
+      connectNulls
+    />
+  ) : null;
   const yScale = logScale ? ("log" as const) : ("auto" as const);
   const yDomain: [number | string, number | string] = logScale
     ? ["auto", "auto"]
@@ -1505,10 +1679,12 @@ function renderChart(
           {hasRight && <YAxis yAxisId="right" {...yAxisRightProps} />}
           <Tooltip {...tooltipProps} />
           <Legend {...legendProps} />
+          {eventOverlay}
           {bucketOverlay}
           {seriesKeys.map((k, i) => (
             <Bar key={k} dataKey={k} yAxisId={axisOf(k)} fill={COLORS[i % COLORS.length]} />
           ))}
+          {roasSeries}
         </BarChart>
       );
     case "line":
@@ -1520,6 +1696,7 @@ function renderChart(
           {hasRight && <YAxis yAxisId="right" {...yAxisRightProps} />}
           <Tooltip {...tooltipProps} />
           <Legend {...legendProps} />
+          {eventOverlay}
           {bucketOverlay}
           {seriesKeys.map((k, i) => (
             <Line
@@ -1533,6 +1710,7 @@ function renderChart(
               connectNulls
             />
           ))}
+          {roasSeries}
         </LineChart>
       );
     case "area":
@@ -1544,6 +1722,7 @@ function renderChart(
           {hasRight && <YAxis yAxisId="right" {...yAxisRightProps} />}
           <Tooltip {...tooltipProps} />
           <Legend {...legendProps} />
+          {eventOverlay}
           {bucketOverlay}
           {seriesKeys.map((k, i) => (
             <Area
@@ -1557,6 +1736,7 @@ function renderChart(
               connectNulls
             />
           ))}
+          {roasSeries}
         </AreaChart>
       );
     case "pie": {

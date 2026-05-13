@@ -14,6 +14,8 @@ import NicknamesTab from "@/components/reports/NicknamesTab";
 import UploadsTab from "@/components/reports/UploadsTab";
 import ViewsBar from "@/components/reports/ViewsBar";
 import DateRangeSlider from "@/components/reports/DateRangeSlider";
+import BrandEventsBar from "@/components/reports/BrandEventsBar";
+import type { BrandEvent } from "@/lib/reports/brand-events";
 import { emptyFilter, type FilterState } from "@/lib/reports/filter";
 import type { ReportColumn, ReportType } from "@/lib/reports/types";
 import { Button } from "@/components/ui/button";
@@ -55,6 +57,10 @@ export default function BrandDetailPage() {
     groupBy: "search_term" | "target_value";
     value: string;
   } | null>(null);
+
+  /** 브랜드 전용 이벤트 (예: BS 행사 기간). 한 번 로드해서 모든 차트에 prop으로
+   *  내려보낸다. BrandEventsBar 가 fetch/CRUD 를 담당. */
+  const [events, setEvents] = useState<BrandEvent[]>([]);
 
   /** Brand-scoped campaign_name → nickname map. Loaded from the API, passed
    *  down to ChartBuilder so long Amazon names display as readable aliases. */
@@ -653,6 +659,15 @@ export default function BrandDetailPage() {
                 <Loader2 size={12} className="animate-spin text-cyan-400 shrink-0" />
               )}
             </div>
+            <div className="mt-1.5">
+              <BrandEventsBar
+                brand={brand}
+                events={events}
+                onChange={setEvents}
+                minDate={brandDateBounds?.min}
+                maxDate={brandDateBounds?.max}
+              />
+            </div>
           </div>
 
           <ViewsBar
@@ -685,6 +700,7 @@ export default function BrandDetailPage() {
               onConfigChange={setChartConfig}
               nicknames={nicknames}
               brand={brand}
+              events={events}
               slotBeforeChart={
                 <BrandSummaryChart
                   slug={primary.type.slug}
@@ -693,6 +709,7 @@ export default function BrandDetailPage() {
                   dateFrom={primaryFilter.dateFrom}
                   dateTo={primaryFilter.dateTo}
                   config={chartConfig}
+                  events={events}
                 />
               }
             />
@@ -729,6 +746,7 @@ export default function BrandDetailPage() {
                 setHidden={setHiddenTermsOwned}
                 termsLoading={sharedTermsLoading}
                 stackColumn="search_term"
+                events={events}
                 onDrill={(v) =>
                   setDrillState({
                     filterBy: "search_term",
@@ -747,6 +765,7 @@ export default function BrandDetailPage() {
                 hidden={sharedHiddenTerms}
                 setHidden={setHiddenTermsOwned}
                 termsLoading={sharedTermsLoading}
+                events={events}
                 onDrill={(v) =>
                   setDrillState({
                     filterBy: "search_term",
@@ -789,6 +808,7 @@ export default function BrandDetailPage() {
                 setHidden={setHiddenTargetsOwned}
                 termsLoading={sharedTargetValuesLoading}
                 stackColumn="target_value"
+                events={events}
                 onDrill={(v) =>
                   setDrillState({
                     filterBy: "target_value",
@@ -808,6 +828,7 @@ export default function BrandDetailPage() {
                 setHidden={setHiddenTargetsOwned}
                 termsLoading={sharedTargetValuesLoading}
                 stackColumn="target_value"
+                events={events}
                 onDrill={(v) =>
                   setDrillState({
                     filterBy: "target_value",
